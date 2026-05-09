@@ -30,6 +30,8 @@ import {
   ModelDescriptor,
   PatientPreset,
   SnapshotPredictionResponse,
+  SnapshotExplainResponse,
+  ShapContribution,
   FeatureStats,
 } from '@/lib/api'
 
@@ -90,7 +92,27 @@ export default function SimulatorPage() {
   const [predicting, setPredicting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Faz 7: SHAP local explain state
+  const [shapTop5, setShapTop5] = useState<ShapContribution[] | null>(null)
+  const [explaining, setExplaining] = useState(false)
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** "Açıkla" butonuna basıldığında SHAP top-5 hesaplar. */
+  const runExplain = useCallback(async () => {
+    if (Object.keys(features).length === 0) return
+    setExplaining(true)
+    setShapTop5(null)
+    try {
+      const res: SnapshotExplainResponse = await api.simulator.explainSnapshot(features, gender)
+      setShapTop5(res.shap_top5)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'SHAP hatası'
+      setError(msg)
+    } finally {
+      setExplaining(false)
+    }
+  }, [features, gender])
 
   // İlk yükleme: presetler + modeller + feature_stats
   useEffect(() => {
@@ -481,40 +503,55 @@ export default function SimulatorPage() {
             </div>
 
             <div className="card">
-              <div className="flex items-center mb-3">
-                <HeartIcon className="w-5 h-5 text-red-500 mr-2" />
-                <h3 className="text-base font-semibold">Top 5 Etkili Faktör</h3>
-              </div>
-              {!prediction || prediction.top_features.length === 0 ? (
-                <p className="text-xs text-gray-500 py-4 text-center">
-                  Tahmin sonrası burada XGBoost katkı sıralaması gösterilir.
-                </p>
-              ) : (
-                <div className="space-y-1.5">
-                  {prediction.top_features.map((f, i) => {
-                    const max = Math.max(
-                      ...prediction.top_features.map((x) => x.importance),
-                      0.0001,
-                    )
-                    const pct = (f.importance / max) * 100
-                    return (
-                      <div key={i} className="space-y-0.5">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-medium">{f.feature}</span>
-                          <span className="text-gray-500 tabular-nums">
-                            {f.raw_value.toFixed(1)}
-                          </span>
-                        </div>
-                        <div className="h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-gradient-to-r from-blue-500 to-purple-600"
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                      </div>
-                    )
-                  })}
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div className="flex items-center">
+                  <HeartIcon className="w-5 h-5 text-red-500 mr-2" />
+                  <h3 className="text-base font-semibold">Top 5 Etkili Faktör</h3>
+                  {shapTop5 && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                      🎯 Local SHAP
+                    </span>
+                  )}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => void runExplain()}
+                  disabled={explaining || !prediction}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                >
+                  {explaining ? (
+                    <><ArrowPathIcon className="w-3 h-3 animate-spin" /> Hesaplanıyor…</>
+                  ) : 'Açıkla'}
+                </button>
+              </div>
+
+              {shapTop5 ? (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-gray-400 mb-1">
+                    XGBoost SHAP — bu hastaya özgü etki (normalize %)
+                  </p>
+                  {shapTop5.map((f, i) => (
+                    <div key={i} className="space-y-0.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium">{f.feature}</span>
+                        <span className={`tabular-nums font-semibold ${f.shap_value >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {f.shap_value >= 0 ? '+' : ''}{f.shap_value.toFixed(3)}
+                          <span className="text-gray-400 font-normal ml-1">({f.pct_contribution.toFixed(1)}%)</span>
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${f.shap_value >= 0 ? 'bg-gradient-to-r from-orange-400 to-red-500' : 'bg-gradient-to-r from-green-400 to-emerald-500'}`}
+                          style={{ width: `${Math.min(f.pct_contribution, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500 py-4 text-center">
+                  "Açıkla" butonuna basın — bu hasta için XGBoost SHAP hesaplanır.
+                </p>
               )}
             </div>
 

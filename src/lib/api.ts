@@ -230,6 +230,49 @@ export interface SnapshotPredictionResponse {
   top_features: TopFeatureContribution[];
 }
 
+/**
+ * Faz 7: XGBoost SHAP local feature contribution (tek hasta).
+ * Simulator sayfasında "Açıkla" butonu ile çağrılır.
+ */
+export interface ShapContribution {
+  feature: string;
+  shap_value: number;
+  abs_shap: number;
+  /** abs_shap / sum(abs_shap) * 100 — normalize yüzde */
+  pct_contribution: number;
+}
+
+export interface SnapshotExplainResponse {
+  models: Array<{
+    model_id: string;
+    model_name: string;
+    risk_score: number;
+    alert: boolean;
+    threshold: number;
+  }>;
+  shap_top5: ShapContribution[] | null;
+}
+
+/**
+ * Faz 7: SHAP global ranking satırı (sepsis-son backend'den).
+ */
+export interface ShapRankingRow {
+  feature: string;
+  mean_abs_shap: number;
+  rank: number;
+}
+
+/**
+ * Faz 7: Attention timestep özeti (sepsis-son backend'den).
+ */
+export interface AttentionSummary {
+  mean: number[];
+  iqr_lo: number[];
+  iqr_hi: number[];
+  n_samples: number;
+  top3_hours: number[];
+}
+
 export interface FeatureRange {
   min: number;
   max: number;
@@ -273,6 +316,19 @@ export const simulatorAPI = {
         gender,
         model_ids: modelIds ?? null,
       }),
+    }),
+
+  /**
+   * Faz 7: Snapshot tahmin + XGBoost SHAP top-5.
+   * Sadece "Açıkla" butonuna basıldığında çağrılır (slider hareketi değil).
+   */
+  explainSnapshot: async (
+    features: Record<string, number>,
+    gender: string,
+  ): Promise<SnapshotExplainResponse> =>
+    apiRequest<SnapshotExplainResponse>('/predict/snapshot/explain', {
+      method: 'POST',
+      body: JSON.stringify({ features, gender }),
     }),
 };
 
@@ -364,6 +420,20 @@ export const artifactsAPI = {
 
   /** LIME HTML için tam URL döndürür (iframe src için). */
   limeUrl: (idx: number): string => `${API_BASE_URL}/artifacts/lime/${idx}`,
+
+  /**
+   * Faz 7: Sepsis-son backend'inden SHAP global ranking (whitelist korumalı).
+   * model_id: 'xgboost' | 'random_forest' | 'logistic_regression'
+   */
+  getShapSummary: async (modelId: string): Promise<ShapRankingRow[]> =>
+    apiRequest<ShapRankingRow[]>(`/artifacts/shap-summary/${modelId}`),
+
+  /**
+   * Faz 7: Sepsis-son backend'inden attention timestep özeti.
+   * model_id: 'bigru_attn' | 'transformer'
+   */
+  getAttention: async (modelId: string): Promise<AttentionSummary> =>
+    apiRequest<AttentionSummary>(`/artifacts/attention/${modelId}`),
 };
 
 
