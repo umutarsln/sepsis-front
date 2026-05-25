@@ -24,19 +24,13 @@ Modern, kapsamlı Next.js dashboard uygulaması.
    - Ufuk bazlı AUROC grafikleri
    - Model detayları ve öneriler
 
-4. **Hasta Girişi (/hasta-girisi)** - Yeni veri girişi
-   - Demografik bilgiler formu
-   - Vital signs girişi
-   - Laboratuvar değerleri
-   - Anlık risk tahmini
-
-5. **Deneyler (/deneyler)** - ML experiment tracking
+4. **Deneyler (/deneyler)** - ML experiment tracking
    - MLflow tarzı deney listesi
    - Hiperparametre görüntüleme
    - Performans metrikleri
    - Durum takibi (running, completed)
 
-6. **Ayarlar (/ayarlar)** - Sistem konfigürasyonu
+5. **Ayarlar (/ayarlar)** - Sistem konfigürasyonu
    - Alarm eşiği ayarları
    - Model tercihleri
    - UI özelleştirme
@@ -86,6 +80,15 @@ API adresleri `.env` üzerinden yönetilir.
 Önerilen local kullanım:
 - `NEXT_PUBLIC_API_BASE_URL=/api`
 - `BACKEND_API_URL=http://localhost:8000`
+
+### API Modülleri (`src/lib/api.ts`)
+
+- `datasetAPI`: veri seti upload ve listeleme
+- `trainingAPI`: eğitim configure/start/status/logs/active/stats
+- `resultsAPI`: eğitim sonucu ve görselleştirme endpointleri
+- `modelsAPI`: eğitilmiş model listesi
+- `simulatorAPI`: preset, model descriptor, feature stats, snapshot prediction
+- `artifactsAPI`: kıyas/klinik özet tabloları + figure/lime URL üretimi
 
 ### Örnek API Kullanımı
 
@@ -166,9 +169,46 @@ npm run lint
 vercel deploy
 ```
 
+## 🧭 Mevcut Durum (Kod Taraması)
+
+### Proje Yapısı
+
+- App Router sayfaları: `src/app/page.tsx`, `src/app/simulator/page.tsx`, `src/app/modeller/page.tsx`, `src/app/aciklanabilirlik/page.tsx`, `src/app/analiz/page.tsx`, `src/app/deneyler/page.tsx`, `src/app/ayarlar/page.tsx`
+- Ortak iskelet: `src/components/DashboardLayout.tsx`, `src/components/Sidebar.tsx`, `src/components/Header.tsx`
+- Eğitim akışı bileşenleri: `src/components/DataUpload.tsx`, `src/components/TrainingConfig.tsx`, `src/components/TrainingMonitor.tsx`, `src/components/ResultsView.tsx`
+- API katmanı: `src/lib/api.ts`
+
+### Gerçek API ile Çalışan Alanlar
+
+- Dashboard (`/`): canlı preset + snapshot prediction + lead-time özeti
+- Simülatör (`/simulator`): preset/model/feature stats + canlı çoklu model tahmin (hasta verisi girişi)
+- Modeller (`/modeller`): dataset list/upload, eğitim konfigürasyonu, monitor, sonuçlar
+- Açıklanabilirlik (`/aciklanabilirlik`): feature ranking, SHAP/attention/LIME artifact görüntüleme
+- Header: aktif eğitim ve istatistik polling
+
+### Mock / Statik Kalan Alanlar
+
+- `src/app/analiz/page.tsx`: istatistik ve grafik verileri statik
+- `src/app/deneyler/page.tsx`: deney listesi ve metrikler statik
+- `src/app/ayarlar/page.tsx`: ayar kaydetme akışı simüle
+- `src/components/FeatureImportance.tsx`: gerçek endpoint TODO, mock veri kullanıyor
+
+### Son Yapılan Önemli Geliştirmeler
+
+- `.env` tabanlı API yapılandırması eklendi (`BACKEND_API_URL`, `NEXT_PUBLIC_API_BASE_URL`)
+- Next.js rewrite hedefi env üzerinden yönetilir hale getirildi
+- Dashboard sayfası canlı snapshot akışına taşındı (mock odaklı yapıdan)
+- Artifacts servisleri (kıyas, feature ranking, LIME JSON, figure) uygulamaya entegre edildi
+
+### Teknik Borç / İyileştirme Adayları
+
+- `FeatureImportance` bileşeni gerçek endpoint ile beslenmeli
+- Bazı ekranlarda `any` tipleri azaltılarak tip güvenliği artırılmalı
+- Bazı dosyalarda kapatılmış lint kuralları tekrar aktif edilip refactor yapılmalı
+
 ## 📝 Notlar
 
-- Mock veriler kullanılıyor (gerçek API bağlantısı için güncellenecek)
+- Uygulama hibrit durumdadır: kritik akışların önemli kısmı gerçek API ile çalışır, bazı ekranlar halen mock/statik veri kullanır
 - Animasyonlar performans için optimize edilmiş
 - Dark mode otomatik sistem tercihini takip eder
 - Tüm formlar client-side validation içerir

@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import DashboardLayout from '@/components/DashboardLayout'
 import { motion } from 'framer-motion'
 import {
-  LightBulbIcon,
   PuzzlePieceIcon,
   EyeIcon,
   ChartBarIcon,
@@ -19,15 +18,28 @@ import {
   YAxis,
 } from 'recharts'
 import clsx from 'clsx'
-import { api, FeatureRankingRow, ShapRankingRow, AttentionSummary } from '@/lib/api'
+import { api, FeatureRankingRow, ShapRankingRow, AttentionSummary, LimeExplanation, LimePatientType, WindowPredictionResponse, HourlySnapshot } from '@/lib/api'
+import LimeExplanationPanel from '@/components/LimeExplanationPanel'
+import DlWindowExplainPanel from '@/components/DlWindowExplainPanel'
+
+/** Saatlik snapshot'tan pencere tahmini snapshot alanlarini cikarir. */
+function toWindowSnapshot(step: HourlySnapshot): Record<string, number> {
+  const { hour: _h, ...rest } = step
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(rest)) {
+    if (v != null) out[k] = v
+  }
+  return out
+}
 
 /**
  * Açıklanabilirlik (Explainability) Sayfası
  *
  * Üç bölüm:
  *   1. SHAP global feature ranking - model bazlı bar chart
- *   2. Attention heatmap'leri (BiGRU + Transformer)
- *   3. LIME örnek hasta açıklamaları (iframe)
+ *   2. Attention heatmap'leri (BiGRU + Transformer, test seti ort.)
+ *   3. DL zaman adımı açıklaması (attention + gradient, demo hasta)
+ *   4. LIME örnek hasta açıklamaları (JSON + bar chart)
  */
 
 type ShapModel = 'xgboost' | 'random_forest' | 'logistic_regression'
@@ -44,13 +56,20 @@ export default function AciklanabilirlikPage() {
   // Faz 7: Sepsis-son SHAP global ranking (mean_abs_shap)
   const [shapSonData, setShapSonData] = useState<ShapRankingRow[]>([])
   const [globalRanking, setGlobalRanking] = useState<FeatureRankingRow[]>([])
-  const [limeIdx, setLimeIdx] = useState(1)
+  const [limeType, setLimeType] = useState<LimePatientType>('tp')
+  const [limeData, setLimeData] = useState<LimeExplanation[]>([])
+  const [loadingLime, setLoadingLime] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loadingShap, setLoadingShap] = useState(false)
   // Faz 7: Attention
   const [attnModel, setAttnModel] = useState<'bigru_attn' | 'transformer'>('bigru_attn')
   const [attnData, setAttnData] = useState<AttentionSummary | null>(null)
   const [loadingAttn, setLoadingAttn] = useState(false)
+  const [dlSeriesResult, setDlSeriesResult] = useState<WindowPredictionResponse | null>(null)
+  const [loadingDlExplain, setLoadingDlExplain] = useState(false)
+  const [populationAttention, setPopulationAttention] = useState<
+    Partial<Record<'bigru_attn' | 'transformer', AttentionSummary>>
+  >({})
 
   // SHAP global ranking yükle (eski fallback)
   useEffect(() => {
@@ -105,6 +124,59 @@ export default function AciklanabilirlikPage() {
     void load()
   }, [attnModel])
 
+  // LIME: secili SHAP modeli ile ayni ML modelinden ornek aciklamalar
+  useEffect(() => {
+    const load = async () => {
+      setLoadingLime(true)
+      try {
+        const rows = await api.artifacts.getLimeExplanations(shapModel)
+        setLimeData(rows)
+      } catch {
+        setLimeData([])
+      } finally {
+        setLoadingLime(false)
+      }
+    }
+    void load()
+  }, [shapModel])
+
+  // DL: demo hastada canli attention / gradient saliency
+  useEffect(() => {
+    const load = async () => {
+      setLoadingDlExplain(true)
+      try {
+        const [patients, bigru, transformer] = await Promise.all([
+          api.windowDemo.listDemoPatients(),
+          api.artifacts.getAttention('bigru_attn').catch(() => null),
+          api.artifacts.getAttention('transformer').catch(() => null),
+        ])
+        setPopulationAttention({
+          ...(bigru ? { bigru_attn: bigru } : {}),
+          ...(transformer ? { transformer } : {}),
+        })
+        if (!patients.length) {
+          setDlSeriesResult(null)
+          return
+        }
+        const pid = patients[0].patient_id
+        const win = await api.windowDemo.getPatientWindow(pid, 24)
+        const series = win.series.map(toWindowSnapshot)
+        const lastSnap = series[series.length - 1]
+        const result = await api.windowDemo.predictWindow({
+          snapshot: lastSnap,
+          series,
+          repeat_hours: 24,
+        })
+        setDlSeriesResult(result)
+      } catch {
+        setDlSeriesResult(null)
+      } finally {
+        setLoadingDlExplain(false)
+      }
+    }
+    void load()
+  }, [])
+
   return (
     <DashboardLayout>
       <motion.div
@@ -117,8 +189,8 @@ export default function AciklanabilirlikPage() {
             Açıklanabilirlik
           </h1>
           <p className="text-gray-600 dark:text-gray-400 text-sm">
-            Model kararlarının arkasındaki feature katkıları, attention
-            ağırlıkları ve örnek hasta-bazlı LIME açıklamaları.
+            ML modelleri için SHAP/LIME; DL modelleri için attention ve gradient
+            saliency ile kararların arkasındaki örüntüler.
           </p>
         </div>
 
@@ -193,6 +265,9 @@ export default function AciklanabilirlikPage() {
                 ))}
               </div>
             </div>
+            <p className="text-xs text-gray-500 mb-3">
+              Global SHAP sıralaması. Aşağıdaki LIME paneli de aynı model seçimini kullanır.
+            </p>
             {loadingShap ? (
               <p className="text-sm text-gray-500 py-8 text-center">Yükleniyor…</p>
             ) : shapSonData.length > 0 ? (
@@ -275,7 +350,8 @@ export default function AciklanabilirlikPage() {
             </div>
           </div>
           <p className="text-xs text-gray-500 mb-3">
-            24 saatlik pencere boyunca ortalama attention ağırlığı — en yüksek değer kritik timestep'i gösterir.
+            Test seti pozitif örneklerinde hesaplanan ortalama attention — hangi
+            saatlerin genelde kritik olduğunu gösterir (popülasyon düzeyi).
           </p>
           {loadingAttn ? (
             <p className="text-sm text-gray-500 py-6 text-center">Yükleniyor…</p>
@@ -319,47 +395,19 @@ export default function AciklanabilirlikPage() {
           )}
         </div>
 
-        {/* LIME */}
-        <div className="card">
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="flex items-center">
-              <LightBulbIcon className="w-5 h-5 text-yellow-500 mr-2" />
-              <h3 className="text-base font-semibold">LIME Hasta Açıklamaları</h3>
-            </div>
-            <div className="flex gap-1.5">
-              {[
-                { idx: 1, label: '✓ TP', title: 'True Positive — Yüksek risk, doğru tahmin' },
-                { idx: 2, label: '✗ FP', title: 'False Positive — Yüksek risk, yanlış tahmin' },
-                { idx: 3, label: '! FN', title: 'False Negative — Düşük risk, hasta kötüleşti (kritik)' },
-              ].map(({ idx, label, title }) => (
-                <button
-                  key={idx}
-                  type="button"
-                  title={title}
-                  onClick={() => setLimeIdx(idx)}
-                  className={clsx(
-                    'px-3 py-1 rounded-md text-xs font-medium border',
-                    limeIdx === idx
-                      ? 'bg-yellow-500 text-white border-yellow-500'
-                      : 'border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800',
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <p className="text-xs text-gray-500 mb-3">
-            {limeIdx === 1 && 'True Positive — XGBoost yüksek risk tahmin etti ve hasta gerçekten septikti.'}
-            {limeIdx === 2 && 'False Positive — XGBoost yüksek risk tahmin etti ama hasta septik değildi. Model neden yanıldı?'}
-            {limeIdx === 3 && 'False Negative — XGBoost düşük risk gösterdi ama hasta septikti. Kritik kaçırma analizi.'}
-          </p>
-          <iframe
-            src={api.artifacts.limeUrl(limeIdx)}
-            className="w-full h-[480px] rounded-lg border border-gray-200 dark:border-gray-700"
-            title={`LIME Patient ${limeIdx}`}
-          />
-        </div>
+        <DlWindowExplainPanel
+          seriesResult={dlSeriesResult}
+          populationAttention={populationAttention}
+          loading={loadingDlExplain}
+        />
+
+        <LimeExplanationPanel
+          explanations={limeData}
+          selected={limeType}
+          onSelect={setLimeType}
+          loading={loadingLime}
+          modelLabel={SHAP_MODELS.find((m) => m.id === shapModel)?.label ?? shapModel}
+        />
       </motion.div>
     </DashboardLayout>
   )

@@ -7,14 +7,13 @@ import {
   HomeIcon,
   ChartBarIcon,
   BeakerIcon,
-  UserPlusIcon,
   Cog6ToothIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CpuChipIcon,
   AdjustmentsHorizontalIcon,
   LightBulbIcon,
-  HeartIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline'
 import clsx from 'clsx'
 
@@ -50,16 +49,16 @@ const navigation: NavItem[] = [
     description: 'Canlı çoklu model risk tahmini'
   },
   {
+    name: 'DL Pencere',
+    href: '/dl-pencere',
+    icon: ClockIcon,
+    description: 'Saatlik seri ile DL tahmin demo'
+  },
+  {
     name: 'Model Karşılaştırma',
     href: '/modeller',
     icon: CpuChipIcon,
     description: 'Model performans karşılaştırması'
-  },
-  {
-    name: 'Klinik Değerlendirme',
-    href: '/klinik-degerlendirme',
-    icon: HeartIcon,
-    description: 'Lead time, kalibrasyon, DCA'
   },
   {
     name: 'Açıklanabilirlik',
@@ -72,12 +71,6 @@ const navigation: NavItem[] = [
     href: '/analiz',
     icon: ChartBarIcon,
     description: 'Veri görselleştirme ve istatistikler'
-  },
-  {
-    name: 'Hasta Girişi',
-    href: '/hasta-girisi',
-    icon: UserPlusIcon,
-    description: 'Yeni hasta verisi gir'
   },
   {
     name: 'Deneyler',

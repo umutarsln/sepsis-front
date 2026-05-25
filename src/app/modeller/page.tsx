@@ -11,254 +11,128 @@ import {
   Radar,
   Legend,
   ResponsiveContainer,
-  LineChart,
-  Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
+  Cell,
 } from 'recharts'
-import { 
-  CpuChipIcon, 
-  ClockIcon, 
-  BoltIcon,
-  ChartBarIcon,
-  AdjustmentsHorizontalIcon,
-  PlayCircleIcon,
-  CheckCircleIcon
-} from '@heroicons/react/24/outline'
-import DataUpload from '@/components/DataUpload'
-import TrainingConfig from '@/components/TrainingConfig'
-import TrainingMonitor from '@/components/TrainingMonitor'
-import ResultsView from '@/components/ResultsView'
-import { api, VersionComparisonRow, DLSummaryRow } from '@/lib/api'
-import clsx from 'clsx'
+import { ClockIcon, BoltIcon } from '@heroicons/react/24/outline'
+import { api, Faz6ComparisonRow } from '@/lib/api'
 
 /**
  * Model Karşılaştırma Sayfası
- * 
- * Farklı modellerin performans karşılaştırması ve eğitim.
+ *
+ * sepsis-son Faz 6 ciktisi: 5 ML snapshot + 4 DL/Transformer (h=6, w=24).
  */
 
-type TabType = 'comparison' | 'upload' | 'configure' | 'monitor' | 'results'
+const FAMILY_COLORS: Record<string, string> = {
+  ML: '#3b82f6',
+  DL: '#8b5cf6',
+  Transformer: '#f59e0b',
+}
+
+const FAMILY_LABEL: Record<string, string> = {
+  ML: 'Snapshot ML',
+  DL: 'Derin Öğrenme',
+  Transformer: 'Transformer',
+}
+
+/** Kisa model adi (grafik eksenleri icin). */
+function shortModelName(row: Faz6ComparisonRow): string {
+  const map: Record<string, string> = {
+    logistic_regression: 'LogReg',
+    random_forest: 'RF',
+    xgboost: 'XGB',
+    gradient_boosting: 'GB',
+    gaussian_nb: 'GNB',
+    lstm: 'LSTM',
+    gru: 'GRU',
+    bigru_attn: 'BiGRU',
+    transformer: 'Trans.',
+  }
+  return map[row.model_id] ?? row.model_name
+}
 
 export default function ModellerPage() {
-  // Tab management
-  const [activeTab, setActiveTab] = useState<TabType>('comparison')
-  
-  // State
-  const [datasets, setDatasets] = useState<any[]>([])
-  const [selectedDataset, setSelectedDataset] = useState<any>(null)
-  const [trainingJobId, setTrainingJobId] = useState<string | null>(null)
-
-  // Artifact verileri
-  const [versionRows, setVersionRows] = useState<VersionComparisonRow[]>([])
-  const [dlRows, setDlRows] = useState<DLSummaryRow[]>([])
+  const [comparisonRows, setComparisonRows] = useState<Faz6ComparisonRow[]>([])
   const [artifactError, setArtifactError] = useState<string | null>(null)
 
-  // Load datasets + artifact verileri
   useEffect(() => {
-    const loadAll = async () => {
+    const load = async () => {
       try {
-        const [data, vRows, dRows] = await Promise.all([
-          api.dataset.list().catch(() => []),
-          api.artifacts.getVersionComparison(),
-          api.artifacts.getDlSummary(),
-        ])
-        setDatasets(data)
-        setVersionRows(vRows)
-        setDlRows(dRows)
+        const rows = await api.artifacts.getFaz6Comparison()
+        setComparisonRows(rows)
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Yükleme hatası'
         setArtifactError(msg)
       }
     }
-    void loadAll()
+    void load()
   }, [])
 
-  // Session persistence: Restore training job on mount
-  useEffect(() => {
-    const savedJobId = localStorage.getItem('active_training_job')
-    if (savedJobId) {
-      // Check if job is still active
-      api.training.getStatus(savedJobId).then((status) => {
-        if (status.status === 'running') {
-          setTrainingJobId(savedJobId)
-          setActiveTab('monitor')
-        } else if (status.status === 'completed') {
-          setTrainingJobId(savedJobId)
-          setActiveTab('results')
-        } else {
-          // Job is done or failed, clear localStorage
-          localStorage.removeItem('active_training_job')
-        }
-      }).catch(() => {
-        // Job not found, clear localStorage
-        localStorage.removeItem('active_training_job')
-      })
-    }
-  }, [])
-
-  // Handlers
-  const handleDatasetUploaded = (dataset: any) => {
-    setSelectedDataset(dataset)
-    setActiveTab('configure')
-  }
-
-  const handleTrainingConfigured = (jobId: string) => {
-    localStorage.setItem('active_training_job', jobId)
-    setTrainingJobId(jobId)
-    setActiveTab('monitor')
-  }
-
-  /**
-   * Artifact verisinden ekrana çıkacak özet model kartlarını üretir.
-   *
-   * - V5 GridSearch + V6 Ensemble + en iyi DL modelleri seçilir.
-   */
+  /** Kart + grafikler icin siralanmis model listesi. */
   const models = useMemo(() => {
-    const palette = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444', '#0ea5e9']
-    const items: Array<{
-      name: string
-      type: string
-      auroc: number
-      auprc: number
-      sensitivity: number
-      specificity: number
-      ppv: number
-      sensAtSpec85: number
-      trainTime: string
-      params: string
-      color: string
-    }> = []
+    return [...comparisonRows]
+      .sort((a, b) => b.auroc - a.auroc)
+      .map((r) => ({
+        ...r,
+        color: FAMILY_COLORS[r.family] ?? '#6b7280',
+        typeLabel: FAMILY_LABEL[r.family] ?? r.family,
+        shortName: shortModelName(r),
+      }))
+  }, [comparisonRows])
 
-    // V5 GridSearch — tüm sklearn aileleri
-    const v5 = versionRows.filter((r) => r.group === 'v5_temporal_cap200k_gridsearch')
-    v5.forEach((r) => {
-      items.push({
-        name: r.model.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-        type: 'Sklearn (V5)',
-        auroc: r.test_auroc ?? 0,
-        auprc: r.test_auprc ?? 0,
-        sensitivity: r.test_sensitivity ?? 0,
-        specificity: r.test_specificity ?? 0,
-        ppv: r.test_ppv ?? 0,
-        sensAtSpec85: r.sens_at_target_spec ?? 0,
-        trainTime: r.train_seconds ? `${(r.train_seconds / 60).toFixed(1)} dk` : '—',
-        params: r.n_features ? `${r.n_features}f` : '—',
-        color: palette[items.length % palette.length],
-      })
-    })
+  const dlRows = useMemo(() => models.filter((m) => m.family !== 'ML'), [models])
 
-    // V6 Ensemble
-    const ensemble = versionRows.find((r) => r.model === 'ensemble_v6')
-    if (ensemble) {
-      items.push({
-        name: 'V6 Ensemble',
-        type: 'XGB + Transformer',
-        auroc: ensemble.test_auroc ?? 0,
-        auprc: ensemble.test_auprc ?? 0,
-        sensitivity: ensemble.test_sensitivity ?? 0,
-        specificity: ensemble.test_specificity ?? 0,
-        ppv: ensemble.test_ppv ?? 0,
-        sensAtSpec85: ensemble.sens_at_target_spec ?? 0,
-        trainTime: '—',
-        params: '—',
-        color: palette[items.length % palette.length],
-      })
-    }
-
-    // DL: en yüksek AUROC senaryosunu temsil olarak seç
-    const dlBest = [...dlRows]
-      .sort((a, b) => b.test_auroc - a.test_auroc)
-      .slice(0, 2)
-    dlBest.forEach((r) => {
-      items.push({
-        name: r.model === 'bigru_attn' ? 'BiGRU + Attention' : 'Transformer',
-        type: `${r.scenario} · DL`,
-        auroc: r.test_auroc,
-        auprc: r.test_auprc,
-        sensitivity: r.sens_at_spec85,
-        specificity: 0.85,
-        ppv: 0,
-        sensAtSpec85: r.sens_at_spec85,
-        trainTime: `${(r.train_seconds / 60).toFixed(1)} dk`,
-        params: '~140K',
-        color: palette[items.length % palette.length],
-      })
-    })
-
-    return items
-  }, [versionRows, dlRows])
-
-  /**
-   * Radar grafiği için en iyi 4 modelin AUROC/AUPRC/Sens/PPV/Spec değerlerini
-   * 0–100 ölçeğine taşır.
-   */
+  /** Radar grafigi — AUROC/AUPRC/Sens@85/F1 (top 4). */
   const radarData = useMemo(() => {
-    if (models.length === 0) return []
-    const top = [...models].sort((a, b) => b.auroc - a.auroc).slice(0, 4)
-    const metrics: Array<{ key: keyof typeof top[number]; label: string }> = [
-      { key: 'auroc', label: 'AUROC' },
-      { key: 'auprc', label: 'AUPRC' },
-      { key: 'sensitivity', label: 'Sens' },
-      { key: 'specificity', label: 'Spec' },
-      { key: 'sensAtSpec85', label: 'Sens@Spec85' },
+    const top = models.slice(0, 4)
+    if (top.length === 0) return []
+    const metrics = [
+      { key: 'auroc' as const, label: 'AUROC' },
+      { key: 'auprc' as const, label: 'AUPRC' },
+      { key: 'sens_spec85' as const, label: 'Sens@85' },
+      { key: 'f1' as const, label: 'F1' },
     ]
     return metrics.map((m) => {
       const row: Record<string, number | string> = { metric: m.label }
       top.forEach((mdl) => {
-        row[mdl.name] = Math.round((mdl[m.key] as number) * 100)
+        row[mdl.model_name] = Math.round(mdl[m.key] * 100)
       })
       return row
     })
   }, [models])
 
-  const radarKeys = useMemo(
-    () => [...models].sort((a, b) => b.auroc - a.auroc).slice(0, 4).map((m) => m.name),
+  const radarKeys = useMemo(() => models.slice(0, 4).map((m) => m.model_name), [models])
+
+  /** AUROC cubuk grafigi — tum 9 model. */
+  const aurocBarData = useMemo(
+    () =>
+      models.map((m) => ({
+        name: m.shortName,
+        auroc: Number(m.auroc.toFixed(4)),
+        fill: m.color,
+      })),
     [models],
   )
 
-  /**
-   * Horizon performance — V1..V5 versiyonlarının AUROC karşılaştırması
-   * (h6 sabit; ama versiyonlar farklı feature engineering aşamalarını temsil
-   * ediyor).
-   */
-  const horizonPerformance = useMemo(() => {
-    const groups = [
-      { id: 'v1_flat_cap200k_fixed', label: 'V1 Flat' },
-      { id: 'v2_flat_full_fixed', label: 'V2 Full' },
-      { id: 'v3_flat_cap200k_gridsearch', label: 'V3 Grid' },
-      { id: 'v4_temporal_cap200k_fixed', label: 'V4 Temp' },
-      { id: 'v5_temporal_cap200k_gridsearch', label: 'V5 Best' },
-    ]
-    return groups.map((g) => {
-      const rows = versionRows.filter((r) => r.group === g.id)
-      const xgb = rows.find((r) => r.model === 'xgboost')?.test_auroc ?? 0
-      const rf = rows.find((r) => r.model === 'random_forest')?.test_auroc ?? 0
-      const lr = rows.find((r) => r.model === 'logistic_regression')?.test_auroc ?? 0
-      return {
-        horizon: g.label,
-        xgb: Number(xgb.toFixed(4)),
-        rf: Number(rf.toFixed(4)),
-        lr: Number(lr.toFixed(4)),
-      }
-    })
-  }, [versionRows])
+  /** Lead-time cubuk grafigi — ML modelleri icin medyan saat. */
+  const leadTimeBarData = useMemo(
+    () =>
+      models
+        .filter((m) => m.median_lead_h != null)
+        .map((m) => ({
+          name: m.shortName,
+          hours: m.median_lead_h as number,
+          fill: m.color,
+        })),
+    [models],
+  )
 
-  const bestModel = useMemo(() => {
-    if (models.length === 0) return null
-    return [...models].sort((a, b) => b.auroc - a.auroc)[0]
-  }, [models])
-
-  // Tab configuration
-  const tabs = [
-    { id: 'comparison' as const, label: 'Model Karşılaştırma', icon: ChartBarIcon },
-    { id: 'upload' as const, label: 'Veri Yükleme', icon: BoltIcon },
-    { id: 'configure' as const, label: 'Eğitim Yapılandırma', icon: AdjustmentsHorizontalIcon },
-    { id: 'monitor' as const, label: 'Eğitim İzleme', icon: PlayCircleIcon },
-    { id: 'results' as const, label: 'Sonuçlar', icon: CheckCircleIcon },
-  ]
+  const bestModel = models[0] ?? null
 
   return (
     <DashboardLayout>
@@ -267,306 +141,241 @@ export default function ModellerPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
       >
-        {/* Header */}
         <div className="mb-6">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
             Model Karşılaştırma
           </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            Model eğitimi ve performans karşılaştırması
+          <p className="text-gray-600 dark:text-gray-400 text-sm">
+            PhysioNet 2019 test seti — Faz 6: 5 ML snapshot (h=6) + 4 DL pencere modeli
+            (LSTM, GRU, BiGRU+Attention, Transformer; h=6, w=24).
           </p>
         </div>
 
-        {/* Tabs */}
-        <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
-          <nav className="-mb-px flex space-x-8">
-            {tabs.map((tab) => {
-              const Icon = tab.icon
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={clsx(
-                    'flex items-center space-x-2 py-4 border-b-2 font-medium text-sm transition-colors',
-                    activeTab === tab.id
-                      ? 'border-blue-600 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  )}
-                >
-                  <Icon className="w-5 h-5" />
-                  <span>{tab.label}</span>
-                </button>
-              )
-            })}
-          </nav>
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === 'comparison' && (
-          <div className="space-y-6">
-            {/* Model Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {models.map((model, index) => (
-                <motion.div
-                  key={model.name}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.1 }}
-                  className="card hover:shadow-lg transition-shadow cursor-pointer"
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <span 
-                      className="w-3 h-3 rounded-full" 
-                      style={{ backgroundColor: model.color }}
-                    />
-                    <span className="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-                      {model.type}
-                    </span>
-                  </div>
-                  
-                  <h3 className="font-semibold text-lg mb-2">{model.name}</h3>
-                  
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">AUROC</span>
-                      <span className="font-semibold tabular-nums">{model.auroc.toFixed(3)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">AUPRC</span>
-                      <span className="font-semibold tabular-nums">{model.auprc.toFixed(3)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600 dark:text-gray-400">Sens@Spec85</span>
-                      <span className="font-semibold tabular-nums">{model.sensAtSpec85.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                    <div className="flex items-center justify-between text-xs text-gray-500">
-                      <div className="flex items-center">
-                        <ClockIcon className="w-4 h-4 mr-1" />
-                        {model.trainTime}
-                      </div>
-                      <div className="flex items-center">
-                        <CpuChipIcon className="w-4 h-4 mr-1" />
-                        {model.params}
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
+        <div className="space-y-6">
+          {artifactError && (
+            <div className="px-4 py-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 text-sm">
+              Veri yüklenemedi: {artifactError}
             </div>
+          )}
 
-            {/* Radar Chart - artifact verisi */}
-            <div className="card">
-              <h3 className="text-lg font-semibold mb-4">
-                Genel Performans Karşılaştırması (Top 4)
-              </h3>
-              {radarKeys.length === 0 ? (
-                <p className="text-sm text-gray-500 py-8 text-center">
-                  Artifact yükleniyor…
-                </p>
-              ) : (
-                <ResponsiveContainer width="100%" height={400}>
-                  <RadarChart data={radarData}>
-                    <PolarGrid stroke="#e5e7eb" />
-                    <PolarAngleAxis dataKey="metric" />
-                    <PolarRadiusAxis angle={90} domain={[0, 100]} />
-                    {radarKeys.map((name, i) => {
-                      const colors = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b']
-                      return (
-                        <Radar
-                          key={name}
-                          name={name}
-                          dataKey={name}
-                          stroke={colors[i % 4]}
-                          fill={colors[i % 4]}
-                          fillOpacity={0.3}
-                        />
-                      )
-                    })}
-                    <Legend />
-                  </RadarChart>
-                </ResponsiveContainer>
-              )}
-            </div>
+          {models.length === 0 && !artifactError && (
+            <p className="text-sm text-gray-500 py-8 text-center">Karşılaştırma verisi yükleniyor…</p>
+          )}
 
-            {/* Versiyon AUROC ilerlemesi - artifact verisi */}
-            <div className="card">
-              <h3 className="text-lg font-semibold mb-4">
-                Versiyon Bazlı AUROC İlerlemesi (h=6)
-              </h3>
-              <p className="text-xs text-gray-500 mb-3">
-                V1 (flat 200K) → V2 (full) → V3 (GridSearch) → V4 (temporal FE) →
-                V5 (temporal + GridSearch). Veri kaynağı: <code>version_comparison.csv</code>.
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="card text-sm">
+              <h3 className="font-semibold text-blue-700 dark:text-blue-300 mb-1">ML Snapshot (5)</h3>
+              <p className="text-gray-600 dark:text-gray-400">
+                Tek anlik 18 feature → Lojistik Reg., RF, XGBoost, Gradyan Artirma, Gaussian NB.
+                Metrik: AUROC, AUPRC, F1, Sens@Spec=0.85, medyan lead-time.
               </p>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={horizonPerformance}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="horizon" />
-                  <YAxis domain={[0.6, 0.85]} tickFormatter={(v) => v.toFixed(2)} />
-                  <Tooltip formatter={(v: number) => v.toFixed(4)} />
+            </div>
+            <div className="card text-sm">
+              <h3 className="font-semibold text-purple-700 dark:text-purple-300 mb-1">DL Pencere (3)</h3>
+              <p className="text-gray-600 dark:text-gray-400">
+                24 saat × 18 feature serisi → LSTM, GRU, BiGRU+Attention. Ayni test seti,
+                pencere bazli tahmin.
+              </p>
+            </div>
+            <div className="card text-sm">
+              <h3 className="font-semibold text-amber-700 dark:text-amber-300 mb-1">Transformer (1)</h3>
+              <p className="text-gray-600 dark:text-gray-400">
+                Temporal Transformer — self-attention ile uzun bagimlilik. Faz 6 raporundaki
+                9-modelli tablo ile karsilastirilir.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {models.map((model, index) => (
+              <motion.div
+                key={model.model_id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.05 }}
+                className="card hover:shadow-lg transition-shadow"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: model.color }} />
+                  <span className="text-xs bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
+                    {model.typeLabel}
+                  </span>
+                </div>
+                <h3 className="font-semibold text-base mb-2">{model.model_name}</h3>
+                <div className="space-y-2 text-sm">
+                  <MetricRow label="AUROC" value={model.auroc.toFixed(3)} />
+                  <MetricRow label="AUPRC" value={model.auprc.toFixed(3)} />
+                  <MetricRow label="Sens@Spec85" value={model.sens_spec85.toFixed(3)} />
+                  <MetricRow label="F1" value={model.f1.toFixed(3)} />
+                </div>
+                {model.median_lead_h != null && (
+                  <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700 flex items-center text-xs text-gray-500">
+                    <ClockIcon className="w-4 h-4 mr-1" />
+                    Medyan lead-time: {model.median_lead_h.toFixed(0)}h
+                  </div>
+                )}
+              </motion.div>
+            ))}
+          </div>
+
+          {radarKeys.length > 0 && (
+            <div className="card">
+              <h3 className="text-lg font-semibold mb-4">Top 4 Model — Radar (AUROC, AUPRC, Sens, F1)</h3>
+              <ResponsiveContainer width="100%" height={400}>
+                <RadarChart data={radarData}>
+                  <PolarGrid stroke="#e5e7eb" />
+                  <PolarAngleAxis dataKey="metric" />
+                  <PolarRadiusAxis angle={90} domain={[0, 100]} />
+                  {radarKeys.map((name, i) => {
+                    const colors = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b']
+                    return (
+                      <Radar
+                        key={name}
+                        name={name}
+                        dataKey={name}
+                        stroke={colors[i % 4]}
+                        fill={colors[i % 4]}
+                        fillOpacity={0.3}
+                      />
+                    )
+                  })}
                   <Legend />
-                  <Line type="monotone" dataKey="lr" stroke="#3b82f6" strokeWidth={2} name="Logistic Regression" />
-                  <Line type="monotone" dataKey="xgb" stroke="#10b981" strokeWidth={2} name="XGBoost" />
-                  <Line type="monotone" dataKey="rf" stroke="#8b5cf6" strokeWidth={2} name="Random Forest" />
-                </LineChart>
+                </RadarChart>
               </ResponsiveContainer>
             </div>
+          )}
 
-            {/* DL Senaryo Karşılaştırması - artifact verisi */}
-            {dlRows.length > 0 && (
-              <div className="card">
-                <h3 className="text-lg font-semibold mb-4">
-                  Derin Öğrenme Senaryoları (h=6, w=24)
-                </h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-200 dark:border-gray-700">
-                        <th className="text-left py-2 px-3 font-semibold">Senaryo</th>
-                        <th className="text-left py-2 px-3 font-semibold">Model</th>
-                        <th className="text-right py-2 px-3 font-semibold">AUROC</th>
-                        <th className="text-right py-2 px-3 font-semibold">95% CI</th>
-                        <th className="text-right py-2 px-3 font-semibold">AUPRC</th>
-                        <th className="text-right py-2 px-3 font-semibold">F1</th>
-                        <th className="text-right py-2 px-3 font-semibold">Sens@Spec85</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dlRows.map((r, i) => (
-                        <tr
-                          key={i}
-                          className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+          {aurocBarData.length > 0 && (
+            <div className="card">
+              <h3 className="text-lg font-semibold mb-4">AUROC Karşılaştırması (9 Model)</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Kaynak: <code>adim_6/ciktilar/version_comparison_summary.csv</code>
+              </p>
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={aurocBarData} margin={{ bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                  <YAxis domain={[0.65, 0.88]} tickFormatter={(v) => v.toFixed(2)} />
+                  <Tooltip formatter={(v: number) => v.toFixed(4)} />
+                  <Bar dataKey="auroc" radius={[4, 4, 0, 0]}>
+                    {aurocBarData.map((entry, i) => (
+                      <Cell key={i} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {leadTimeBarData.length > 0 && (
+            <div className="card">
+              <h3 className="text-lg font-semibold mb-4">Medyan Lead-Time (Saat) — ML Modelleri</h3>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={leadTimeBarData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="name" />
+                  <YAxis unit="h" />
+                  <Tooltip formatter={(v: number) => `${v.toFixed(1)} saat`} />
+                  <Bar dataKey="hours" radius={[4, 4, 0, 0]}>
+                    {leadTimeBarData.map((entry, i) => (
+                      <Cell key={i} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {models.length > 0 && (
+            <div className="card overflow-x-auto">
+              <h3 className="text-lg font-semibold mb-4">Tam Metrik Tablosu</h3>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700">
+                    <th className="text-left py-2 px-3">Aile</th>
+                    <th className="text-left py-2 px-3">Model</th>
+                    <th className="text-right py-2 px-3">AUROC</th>
+                    <th className="text-right py-2 px-3">AUPRC</th>
+                    <th className="text-right py-2 px-3">F1</th>
+                    <th className="text-right py-2 px-3">Sens@85</th>
+                    <th className="text-right py-2 px-3">Lead (h)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {models.map((r) => (
+                    <tr
+                      key={r.model_id}
+                      className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                    >
+                      <td className="py-2 px-3">
+                        <span
+                          className="text-xs px-2 py-0.5 rounded"
+                          style={{
+                            backgroundColor: `${r.color}22`,
+                            color: r.color,
+                          }}
                         >
-                          <td className="py-2 px-3">
-                            <span className="font-mono text-xs">{r.scenario}</span>
-                            <span className="ml-2 text-xs text-gray-500">{r.label}</span>
-                          </td>
-                          <td className="py-2 px-3 font-medium">
-                            {r.model === 'bigru_attn' ? 'BiGRU + Attn' : 'Transformer'}
-                          </td>
-                          <td className="py-2 px-3 text-right tabular-nums font-semibold">
-                            {r.test_auroc.toFixed(4)}
-                          </td>
-                          <td className="py-2 px-3 text-right tabular-nums text-xs text-gray-500">
-                            [{r.auroc_lo.toFixed(3)}, {r.auroc_hi.toFixed(3)}]
-                          </td>
-                          <td className="py-2 px-3 text-right tabular-nums">
-                            {r.test_auprc.toFixed(4)}
-                          </td>
-                          <td className="py-2 px-3 text-right tabular-nums">
-                            {r.test_f1.toFixed(3)}
-                          </td>
-                          <td className="py-2 px-3 text-right tabular-nums">
-                            {r.sens_at_spec85.toFixed(3)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* En iyi model paneli */}
-            {bestModel && (
-              <div className="p-6 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 rounded-lg border-2 border-purple-200 dark:border-purple-700">
-                <div className="flex items-center mb-3">
-                  <BoltIcon className="w-6 h-6 text-purple-600 mr-2" />
-                  <h3 className="text-lg font-semibold text-purple-900 dark:text-purple-100">
-                    En İyi Performans: {bestModel.name}
-                  </h3>
-                </div>
-                <p className="text-gray-700 dark:text-gray-300 mb-4 text-sm">
-                  Gerçek test seti üzerinde en yüksek AUROC'a sahip model. Versiyon
-                  zinciri (V1→V5) boyunca AUROC 0.63'ten {bestModel.auroc.toFixed(2)}'e
-                  yükselmiş. Veri kaynağı: <code>version_comparison.csv</code>.
-                </p>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-purple-600 tabular-nums">
-                      {bestModel.auroc.toFixed(3)}
-                    </p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">AUROC</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-purple-600 tabular-nums">
-                      {bestModel.auprc.toFixed(3)}
-                    </p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">AUPRC</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-purple-600 tabular-nums">
-                      {(bestModel.sensitivity * 100).toFixed(1)}%
-                    </p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">Duyarlılık</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-purple-600 tabular-nums">
-                      {(bestModel.sensAtSpec85 * 100).toFixed(1)}%
-                    </p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      Sens @ Spec85
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {artifactError && (
-              <div className="px-4 py-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 text-sm">
-                Artifact yüklenemedi: {artifactError}
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'upload' && (
-          <DataUpload onDatasetUploaded={handleDatasetUploaded} />
-        )}
-
-        {activeTab === 'configure' && (
-          <TrainingConfig 
-            datasets={datasets} 
-            onTrainingConfigured={handleTrainingConfigured}
-          />
-        )}
-
-        {activeTab === 'monitor' && trainingJobId && (
-          <TrainingMonitor jobId={trainingJobId} />
-        )}
-
-        {activeTab === 'monitor' && !trainingJobId && (
-          <div className="text-center py-12">
-            <div className="inline-block p-6 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-              <p className="text-blue-800 dark:text-blue-200 font-medium">
-                📋 Henüz eğitim başlatılmadı
-              </p>
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-2">
-                Lütfen "Eğitim Yapılandırma" tab'ından eğitimi başlatın.
-              </p>
+                          {r.typeLabel}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 font-medium">{r.model_name}</td>
+                      <td className="py-2 px-3 text-right tabular-nums font-semibold">
+                        {r.auroc.toFixed(4)}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums">{r.auprc.toFixed(4)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">{r.f1.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">{r.sens_spec85.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">
+                        {r.median_lead_h != null ? r.median_lead_h.toFixed(0) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-        )}
+          )}
 
-        {activeTab === 'results' && trainingJobId && (
-          <ResultsView jobId={trainingJobId} />
-        )}
-
-        {activeTab === 'results' && !trainingJobId && (
-          <div className="text-center py-12">
-            <div className="inline-block p-6 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-              <p className="text-blue-800 dark:text-blue-200 font-medium">
-                📋 Henüz eğitim tamamlanmadı
+          {bestModel && (
+            <div className="p-6 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 rounded-lg border-2 border-purple-200 dark:border-purple-700">
+              <div className="flex items-center mb-3">
+                <BoltIcon className="w-6 h-6 text-purple-600 mr-2" />
+                <h3 className="text-lg font-semibold text-purple-900 dark:text-purple-100">
+                  En Yüksek AUROC: {bestModel.model_name} ({bestModel.typeLabel})
+                </h3>
+              </div>
+              <p className="text-gray-700 dark:text-gray-300 mb-4 text-sm">
+                Faz 6 test setinde {bestModel.auroc.toFixed(3)} AUROC. DL ailesinde en yüksek
+                AUPRC {dlRows[0]?.model_name ?? '—'} ({dlRows[0]?.auprc.toFixed(3) ?? '—'});
+                ML snapshot içinde XGBoost/Gradyan Artirma ~0.82 AUROC bandında.
               </p>
-              <p className="text-sm text-blue-700 dark:text-blue-300 mt-2">
-                Lütfen önce bir eğitim başlatın ve tamamlanmasını bekleyin.
-              </p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <StatBlock label="AUROC" value={bestModel.auroc.toFixed(3)} />
+                <StatBlock label="AUPRC" value={bestModel.auprc.toFixed(3)} />
+                <StatBlock label="Sens@Spec85" value={`${(bestModel.sens_spec85 * 100).toFixed(1)}%`} />
+                <StatBlock label="F1" value={bestModel.f1.toFixed(3)} />
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </motion.div>
     </DashboardLayout>
+  )
+}
+
+function MetricRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-gray-600 dark:text-gray-400">{label}</span>
+      <span className="font-semibold tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+function StatBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="text-center">
+      <p className="text-2xl font-bold text-purple-600 tabular-nums">{value}</p>
+      <p className="text-sm text-gray-600 dark:text-gray-400">{label}</p>
+    </div>
   )
 }

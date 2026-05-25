@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DashboardLayout from '@/components/DashboardLayout'
 import { motion } from 'framer-motion'
 import {
@@ -18,92 +18,138 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts'
-import { 
-  ChartBarIcon, 
-  UsersIcon, 
+import {
+  ChartBarIcon,
+  UsersIcon,
   ClockIcon,
-  ExclamationCircleIcon 
+  ExclamationCircleIcon,
+  InformationCircleIcon,
 } from '@heroicons/react/24/outline'
-
-/**
- * Veri Analizi Sayfası
- * 
- * Veri setinin istatistikleri ve görselleştirmeleri.
- */
+import type { ComponentType, SVGProps } from 'react'
+import { artifactsAPI, type DatasetSummary } from '@/lib/api'
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6']
 
-export default function AnalizPage() {
-  const [timeRange, setTimeRange] = useState('30d')
+type StatIcon = ComponentType<SVGProps<SVGSVGElement>>
 
-  // Mock istatistikler
-  const stats = [
+interface SummaryStat {
+  name: string
+  value: string
+  sub: string
+  icon: StatIcon
+  color: string
+}
+
+/**
+ * Sayi degerini binlik ayiracli metne cevirir.
+ */
+function formatNumber(value: number): string {
+  return value.toLocaleString('tr-TR')
+}
+
+/**
+ * Ozet kartlari icin istatistik listesi uretir.
+ */
+function buildSummaryStats(summary: DatasetSummary): SummaryStat[] {
+  return [
     {
       name: 'Toplam Hasta',
-      value: '1,234',
-      change: '+12.5%',
+      value: formatNumber(summary.cohort.total_patients),
+      sub: `${formatNumber(summary.cohort.total_rows)} saatlik kayit`,
       icon: UsersIcon,
       color: 'blue',
     },
     {
-      name: 'Sepsis Vakaları',
-      value: '87',
-      change: '-5.2%',
+      name: 'Sepsis Vakasi',
+      value: formatNumber(summary.labels.sepsis_positive_patients),
+      sub: `%${summary.labels.sepsis_patient_rate_pct.toFixed(2)} hasta duzeyi`,
       icon: ExclamationCircleIcon,
       color: 'red',
     },
     {
-      name: 'Ortalama ICU Süresi',
-      value: '4.2 gün',
-      change: '+0.8 gün',
+      name: 'Medyan ICU Suresi',
+      value: `${summary.length.median.toFixed(0)} saat`,
+      sub: `P25–P75: ${summary.length.p25.toFixed(0)}–${summary.length.p75.toFixed(0)} saat`,
       icon: ClockIcon,
       color: 'green',
     },
     {
-      name: 'Algılama Oranı',
-      value: '76.2%',
-      change: '+3.1%',
+      name: 'Model Split (Test)',
+      value: formatNumber(summary.splits.test_patients),
+      sub: `${summary.splits.test_sepsis_patients} sepsis hastasi`,
       icon: ChartBarIcon,
       color: 'purple',
     },
   ]
+}
 
-  // Yaş dağılımı
-  const ageDistribution = [
-    { age: '18-30', count: 142 },
-    { age: '31-45', count: 287 },
-    { age: '46-60', count: 423 },
-    { age: '61-75', count: 298 },
-    { age: '76+', count: 84 },
-  ]
+/**
+ * Veri analizi sayfasini Faz 2-3 gercek artifact'leriyle doldurur.
+ */
+export default function AnalizPage() {
+  const [summary, setSummary] = useState<DatasetSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // Zaman serisi - günlük hasta sayısı
-  const timeSeriesData = [
-    { day: 'Pzt', count: 45, sepsis: 3 },
-    { day: 'Sal', count: 52, sepsis: 4 },
-    { day: 'Çar', count: 48, sepsis: 2 },
-    { day: 'Per', count: 61, sepsis: 5 },
-    { day: 'Cum', count: 55, sepsis: 4 },
-    { day: 'Cmt', count: 42, sepsis: 2 },
-    { day: 'Paz', count: 38, sepsis: 1 },
-  ]
+  useEffect(() => {
+    let cancelled = false
 
-  // ICU tipi dağılımı
-  const icuTypeData = [
-    { name: 'Medical ICU', value: 45 },
-    { name: 'Surgical ICU', value: 30 },
-    { name: 'Cardiac Surgery', value: 15 },
-    { name: 'Trauma ICU', value: 10 },
-  ]
+    /** Backend'den veri seti ozetini ceker. */
+    async function loadSummary() {
+      try {
+        setLoading(true)
+        setError(null)
+        const data = await artifactsAPI.getDatasetSummary()
+        if (!cancelled) setSummary(data)
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Veri ozeti yuklenemedi')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
 
-  // Özellik eksiklik oranları
-  const missingnessData = [
-    { feature: 'Laktat', missing: 42 },
-    { feature: 'Kreatinin', missing: 28 },
-    { feature: 'WBC', missing: 15 },
-    { feature: 'Nabız', missing: 5 },
-    { feature: 'Ateş', missing: 3 },
-  ]
+    loadSummary()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** Set A / Set B dagilimi grafigi icin veri uretir. */
+  const setDistribution = useMemo(() => {
+    if (!summary) return []
+    return [
+      { name: 'Set A', value: summary.cohort.set_a_patients },
+      { name: 'Set B', value: summary.cohort.set_b_patients },
+    ]
+  }, [summary])
+
+  /** Sepsis hasta dengesi pasta grafigi icin veri uretir. */
+  const sepsisBalance = useMemo(() => {
+    if (!summary) return []
+    return [
+      { name: 'Sepsis (+)', value: summary.labels.sepsis_positive_patients },
+      { name: 'Sepsis (-)', value: summary.labels.sepsis_negative_patients },
+    ]
+  }, [summary])
+
+  /** 18 feature eksiklik grafigi icin sirali veri uretir. */
+  const missingChartData = useMemo(() => {
+    if (!summary) return []
+    return summary.selected_feature_missing.map((row) => ({
+      feature: row.feature,
+      missing: row.missing_pct,
+    }))
+  }, [summary])
+
+  /** Her feature satiri icin yeterli dikey alan (Recharts etiket kirpmasini onler). */
+  const missingChartHeight = Math.max(480, missingChartData.length * 34 + 48)
+
+  const stats = useMemo(
+    () => (summary ? buildSummaryStats(summary) : []),
+    [summary],
+  )
 
   return (
     <DashboardLayout>
@@ -112,207 +158,278 @@ export default function AnalizPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
       >
-        {/* Header */}
         <div className="mb-6">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
             Veri Analizi
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Veri seti istatistikleri ve görselleştirmeleri
+            PhysioNet 2019 Challenge — Faz 2 EDA ve Faz 3 preprocessing ozeti
           </p>
         </div>
 
-        {/* Time Range Selector */}
-        <div className="mb-6 flex space-x-2">
-          {['7d', '30d', '90d', '1y'].map((range) => (
-            <button
-              key={range}
-              onClick={() => setTimeRange(range)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                timeRange === range
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-              }`}
-            >
-              {range === '7d' && '7 Gün'}
-              {range === '30d' && '30 Gün'}
-              {range === '90d' && '90 Gün'}
-              {range === '1y' && '1 Yıl'}
-            </button>
-          ))}
+        <div className="mb-6 card bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800">
+          <div className="flex gap-3">
+            <InformationCircleIcon className="w-6 h-6 text-blue-600 shrink-0 mt-0.5" />
+            <div className="text-sm text-gray-700 dark:text-gray-300">
+              <p>
+                Veriler <strong>Faz 2</strong> (<code>eda_summary.json</code>) ve{' '}
+                <strong>Faz 3</strong> (<code>splits.json</code>, <code>feature_stats.json</code>)
+                artifact&apos;lerinden gelir. Ham satir eksiklik oranlari forward-fill oncesidir.
+              </p>
+            </div>
+          </div>
         </div>
 
-        {/* Stats Cards */}
+        {error && (
+          <div className="mb-4 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-sm">
+            {error}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-          {stats.map((stat, index) => {
-            const Icon = stat.icon
-            return (
-              <motion.div
-                key={stat.name}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.1 }}
-                className="card"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {stat.name}
-                    </p>
-                    <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
-                      {stat.value}
-                    </p>
-                    <p className={`text-sm mt-1 ${
-                      stat.change.startsWith('+') 
-                        ? 'text-green-600' 
-                        : 'text-red-600'
-                    }`}>
-                      {stat.change}
-                    </p>
+          {loading
+            ? Array.from({ length: 4 }, (_, index) => (
+                <motion.div
+                  key={`sk-${index}`}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.1 }}
+                  className="card"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Yukleniyor…</p>
+                      <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">—</p>
+                    </div>
+                    <div className="p-3 bg-gray-100 dark:bg-gray-800 rounded-lg">
+                      <ChartBarIcon className="w-6 h-6 text-blue-600" />
+                    </div>
                   </div>
-                  <div className={`p-3 bg-${stat.color}-100 dark:bg-${stat.color}-900/20 rounded-lg`}>
-                    <Icon className={`w-6 h-6 text-${stat.color}-600 dark:text-${stat.color}-400`} />
-                  </div>
-                </div>
-              </motion.div>
-            )
-          })}
+                </motion.div>
+              ))
+            : stats.map((stat, index) => {
+                const Icon = stat.icon
+                return (
+                  <motion.div
+                    key={stat.name}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.1 }}
+                    className="card"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">{stat.name}</p>
+                        <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
+                          {stat.value}
+                        </p>
+                        <p className="text-sm mt-1 text-gray-500">{stat.sub}</p>
+                      </div>
+                      <div className="p-3 bg-gray-100 dark:bg-gray-800 rounded-lg">
+                        <Icon className="w-6 h-6 text-blue-600" />
+                      </div>
+                    </div>
+                  </motion.div>
+                )
+              })}
         </div>
 
-        {/* Charts Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {/* Yaş Dağılımı */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2 }}
             className="card"
           >
-            <h3 className="text-lg font-semibold mb-4">Yaş Dağılımı</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={ageDistribution}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="age" />
-                <YAxis />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: '#fff', 
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px'
-                  }}
-                />
-                <Bar dataKey="count" fill="#3b82f6" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <h3 className="text-lg font-semibold mb-4">Set A / Set B Dagilimi</h3>
+            {loading || !summary ? (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">Yukleniyor…</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={setDistribution}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                    outerRadius={90}
+                    dataKey="value"
+                  >
+                    {setDistribution.map((_, index) => (
+                      <Cell key={`set-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: number) => formatNumber(value)} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </motion.div>
 
-          {/* ICU Tipi Dağılımı */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.3 }}
             className="card"
           >
-            <h3 className="text-lg font-semibold mb-4">ICU Tipi Dağılımı</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={icuTypeData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {icuTypeData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+            <h3 className="text-lg font-semibold mb-4">Sepsis Hasta Dengesi</h3>
+            {loading || !summary ? (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">Yukleniyor…</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={sepsisBalance}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={55}
+                    outerRadius={90}
+                    labelLine={false}
+                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
+                    dataKey="value"
+                  >
+                    <Cell fill="#ef4444" />
+                    <Cell fill="#3b82f6" />
+                  </Pie>
+                  <Tooltip formatter={(value: number) => formatNumber(value)} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </motion.div>
 
-          {/* Günlük Hasta Akışı */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.4 }}
             className="card"
           >
-            <h3 className="text-lg font-semibold mb-4">Günlük Hasta Akışı</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={timeSeriesData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="day" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Line 
-                  type="monotone" 
-                  dataKey="count" 
-                  stroke="#3b82f6" 
-                  strokeWidth={2}
-                  name="Toplam Hasta"
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="sepsis" 
-                  stroke="#ef4444" 
-                  strokeWidth={2}
-                  name="Sepsis Vakası"
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            <h3 className="text-lg font-semibold mb-4">Train / Val / Test Split (Hasta)</h3>
+            {loading || !summary ? (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">Yukleniyor…</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={summary.split_chart}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="split" />
+                  <YAxis />
+                  <Tooltip formatter={(value: number) => formatNumber(value)} />
+                  <Legend />
+                  <Bar dataKey="patients" fill="#3b82f6" name="Toplam Hasta" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="sepsis_patients" fill="#ef4444" name="Sepsis Hasta" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </motion.div>
 
-          {/* Eksiklik Analizi */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.5 }}
             className="card"
           >
-            <h3 className="text-lg font-semibold mb-4">Özellik Eksiklik Oranları (%)</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={missingnessData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis type="number" domain={[0, 100]} />
-                <YAxis dataKey="feature" type="category" />
-                <Tooltip />
-                <Bar dataKey="missing" fill="#f59e0b" radius={[0, 8, 8, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <h3 className="text-lg font-semibold mb-4">ICU Kalis Suresi (Persentil, saat)</h3>
+            {loading || !summary ? (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">Yukleniyor…</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={summary.icu_length_chart}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="label" />
+                  <YAxis />
+                  <Tooltip formatter={(value: number) => `${value.toFixed(1)} saat`} />
+                  <Line
+                    type="monotone"
+                    dataKey="hours"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    dot={{ r: 5 }}
+                    name="Saat"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.6 }}
+            className="card lg:col-span-2"
+          >
+            <h3 className="text-lg font-semibold mb-1">
+              Secilen 18 Feature — Ham Eksiklik Orani (%)
+            </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Preprocessing sonrasi forward-fill ile doldurulur; oranlar ham PSV uzerinden.
+              Gender_0 / Gender_1 one-hot kodlamasidir (ikisi de %0 eksik).
+            </p>
+            {loading || !summary ? (
+              <div className="h-[320px] flex items-center justify-center text-gray-500">Yukleniyor…</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <div style={{ height: missingChartHeight, minWidth: 480 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={missingChartData}
+                      layout="vertical"
+                      margin={{ left: 4, right: 16, top: 8, bottom: 8 }}
+                      barSize={18}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis type="number" domain={[0, 100]} tickFormatter={(v) => `%${v}`} />
+                      <YAxis
+                        dataKey="feature"
+                        type="category"
+                        width={104}
+                        interval={0}
+                        tick={{ fontSize: 12 }}
+                      />
+                      <Tooltip formatter={(value: number) => `%${value.toFixed(1)}`} />
+                      <Bar dataKey="missing" fill="#f59e0b" radius={[0, 6, 6, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
           </motion.div>
         </div>
 
-        {/* Veri Kalitesi Özeti */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6 }}
+          transition={{ delay: 0.7 }}
           className="card"
         >
-          <h3 className="text-lg font-semibold mb-4">Veri Kalitesi Özeti</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
-              <p className="text-sm text-gray-600 dark:text-gray-400">Eksiksiz Kayıtlar</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">78.4%</p>
+          <h3 className="text-lg font-semibold mb-4">Veri Seti Ozeti</h3>
+          {loading || !summary ? (
+            <p className="text-gray-500">Yukleniyor…</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                <p className="text-sm text-gray-600 dark:text-gray-400">Model Feature Sayisi</p>
+                <p className="text-2xl font-bold text-green-600 mt-1">
+                  {summary.final_feature_count}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Faz 3 preprocessing ciktisi</p>
+              </div>
+              <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
+                <p className="text-sm text-gray-600 dark:text-gray-400">&gt;%80 Eksik Feature (Ham)</p>
+                <p className="text-2xl font-bold text-yellow-600 mt-1">
+                  {summary.features_above_80pct_missing}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Faz 2 EDA — eleme adayi</p>
+              </div>
+              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                <p className="text-sm text-gray-600 dark:text-gray-400">Sepsis Onset (Medyan)</p>
+                <p className="text-2xl font-bold text-blue-600 mt-1">
+                  +{summary.labels.onset_median_hours.toFixed(0)} saat
+                </p>
+                <p className="text-xs text-gray-500 mt-1">ICU basvurusundan sonra</p>
+              </div>
             </div>
-            <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
-              <p className="text-sm text-gray-600 dark:text-gray-400">Kısmi Eksik</p>
-              <p className="text-2xl font-bold text-yellow-600 mt-1">18.2%</p>
-            </div>
-            <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg">
-              <p className="text-sm text-gray-600 dark:text-gray-400">Yüksek Eksik</p>
-              <p className="text-2xl font-bold text-red-600 mt-1">3.4%</p>
-            </div>
-          </div>
+          )}
         </motion.div>
       </motion.div>
     </DashboardLayout>
   )
 }
-
