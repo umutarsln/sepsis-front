@@ -24,6 +24,7 @@ import {
   YAxis,
 } from 'recharts'
 import clsx from 'clsx'
+import ModelMetricBadges from '@/components/ModelMetricBadges'
 
 import {
   api,
@@ -77,6 +78,22 @@ const RISK_BAND_COLORS: Record<string, string> = {
   critical: '#7f1d1d',
 }
 
+/** Preset risk band etiketleri — sol panel rozet metni. */
+const RISK_BAND_LABELS: Record<string, string> = {
+  low: 'DÜŞÜK',
+  medium: 'ORTA',
+  high: 'YÜKSEK',
+  critical: 'KRİTİK',
+}
+
+/** Preset risk band Tailwind rozet siniflari. */
+const RISK_BAND_BADGE: Record<string, string> = {
+  low: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+  medium: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
+  high: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+  critical: 'bg-rose-200 text-rose-900 dark:bg-rose-950/50 dark:text-rose-200',
+}
+
 export default function SimulatorPage() {
   const [presets, setPresets] = useState<PatientPreset[]>([])
   const [activePresetId, setActivePresetId] = useState<string | null>(null)
@@ -93,19 +110,20 @@ export default function SimulatorPage() {
   const [error, setError] = useState<string | null>(null)
 
   // Faz 7: SHAP local explain state
-  const [shapTop5, setShapTop5] = useState<ShapContribution[] | null>(null)
+  const [shapByModel, setShapByModel] = useState<Record<string, ShapContribution[]> | null>(null)
+  const [explainModelId, setExplainModelId] = useState('xgboost')
   const [explaining, setExplaining] = useState(false)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  /** "Açıkla" butonuna basıldığında SHAP top-5 hesaplar. */
+  /** "Açıkla" butonuna basıldığında tum ML modelleri icin SHAP top-10 hesaplar. */
   const runExplain = useCallback(async () => {
     if (Object.keys(features).length === 0) return
     setExplaining(true)
-    setShapTop5(null)
+    setShapByModel(null)
     try {
       const res: SnapshotExplainResponse = await api.simulator.explainSnapshot(features, gender)
-      setShapTop5(res.shap_top5)
+      setShapByModel(res.shap_by_model ?? (res.shap_top10 ? { xgboost: res.shap_top10 } : null))
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'SHAP hatası'
       setError(msg)
@@ -113,6 +131,14 @@ export default function SimulatorPage() {
       setExplaining(false)
     }
   }, [features, gender])
+
+  const shapTop10 =
+    shapByModel?.[explainModelId] ??
+    (explainModelId === 'xgboost' ? shapByModel?.xgboost : null) ??
+    null
+
+  const explainModelLabel =
+    models.find((m) => m.model_id === explainModelId)?.model_name ?? explainModelId
 
   // İlk yükleme: presetler + modeller + feature_stats
   useEffect(() => {
@@ -131,7 +157,9 @@ export default function SimulatorPage() {
         setSelectedModelIds(liveModels)
 
         if (presetList.length > 0) {
-          applyPreset(presetList[1] ?? presetList[0])
+          const defaultPreset =
+            presetList.find((p) => p.preset_id === 'sinir_durum') ?? presetList[0]
+          applyPreset(defaultPreset)
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Yükleme başarısız'
@@ -199,6 +227,7 @@ export default function SimulatorPage() {
       risk: r.risk_score * 100,
       band: r.risk_level,
       auroc: r.auroc,
+      auprc: r.auprc,
     }))
   }, [prediction])
 
@@ -233,6 +262,7 @@ export default function SimulatorPage() {
             <p className="text-gray-600 dark:text-gray-400 text-sm">
               Hazır hasta profilleri üzerine slider'larla değer değiştirin —
               canlı modeller anlık olarak risk skorunu yeniden hesaplar.
+              Model listesinde test AUROC ve AUPRC (h=6) birlikte gösterilir.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -244,7 +274,11 @@ export default function SimulatorPage() {
             <button
               type="button"
               onClick={() => {
-                if (presets.length) applyPreset(presets[1] ?? presets[0])
+                if (presets.length) {
+                  const defaultPreset =
+                    presets.find((p) => p.preset_id === 'sinir_durum') ?? presets[0]
+                  applyPreset(defaultPreset)
+                }
               }}
               className="text-sm px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 inline-flex items-center"
             >
@@ -267,7 +301,7 @@ export default function SimulatorPage() {
                 <UserIcon className="w-5 h-5 text-blue-600 mr-2" />
                 <h3 className="text-base font-semibold">Hasta Profili</h3>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
                 {presets.map((p) => {
                   const active = activePresetId === p.preset_id
                   return (
@@ -282,19 +316,15 @@ export default function SimulatorPage() {
                           : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50',
                       )}
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="font-medium text-sm">{p.label}</span>
                         <span
                           className={clsx(
-                            'text-xs px-2 py-0.5 rounded-full',
-                            p.risk_band === 'low'
-                              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                              : p.risk_band === 'medium'
-                              ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
-                              : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+                            'text-[10px] px-2 py-0.5 rounded-full shrink-0 font-semibold tracking-wide',
+                            RISK_BAND_BADGE[p.risk_band] ?? RISK_BAND_BADGE.medium,
                           )}
                         >
-                          {p.risk_band.toUpperCase()}
+                          {RISK_BAND_LABELS[p.risk_band] ?? p.risk_band.toUpperCase()}
                         </span>
                       </div>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
@@ -304,6 +334,9 @@ export default function SimulatorPage() {
                   )
                 })}
               </div>
+              <p className="text-[11px] text-gray-400 mt-2">
+                {presets.length} profil · düşükten yükseğe sıralı
+              </p>
 
               <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-700">
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
@@ -375,8 +408,8 @@ export default function SimulatorPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium">{m.label}</span>
-                          <span className="text-[10px] tabular-nums text-gray-500">
-                            AUROC {m.auroc.toFixed(3)}
+                          <span className="text-[10px] tabular-nums text-gray-500 block text-right">
+                            <ModelMetricBadges auroc={m.auroc} auprc={m.auprc} />
                           </span>
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -453,7 +486,10 @@ export default function SimulatorPage() {
                         <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
                         <YAxis dataKey="label" type="category" tick={{ fontSize: 11 }} width={120} />
                         <Tooltip
-                          formatter={(v: number) => [`${Number(v).toFixed(2)}%`, 'Risk']}
+                          formatter={(v: number, name: string) => {
+                            if (name === 'Risk') return [`${Number(v).toFixed(2)}%`, 'Risk']
+                            return [Number(v).toFixed(3), name]
+                          }}
                           contentStyle={{ borderRadius: 8, fontSize: 12 }}
                         />
                         <Bar dataKey="risk" radius={[0, 4, 4, 0]}>
@@ -475,7 +511,12 @@ export default function SimulatorPage() {
                         <div className="min-w-0">
                           <div className="text-sm font-medium truncate">{r.label}</div>
                           <div className="text-[11px] text-gray-500">
-                            AUROC {r.auroc.toFixed(3)} · eşik {r.threshold}
+                            <ModelMetricBadges
+                              auroc={r.auroc}
+                              auprc={r.auprc}
+                              className="text-[11px] text-gray-500"
+                            />
+                            <span className="block mt-0.5 tabular-nums">eşik {r.threshold}</span>
                           </div>
                         </div>
                         <div className="text-right">
@@ -506,31 +547,51 @@ export default function SimulatorPage() {
               <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
                 <div className="flex items-center">
                   <HeartIcon className="w-5 h-5 text-red-500 mr-2" />
-                  <h3 className="text-base font-semibold">Top 5 Etkili Faktör</h3>
-                  {shapTop5 && (
+                  <h3 className="text-base font-semibold">Top 10 Etkili Faktör</h3>
+                  {shapTop10 && (
                     <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
                       🎯 Local SHAP
                     </span>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void runExplain()}
-                  disabled={explaining || !prediction}
-                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                >
-                  {explaining ? (
-                    <><ArrowPathIcon className="w-3 h-3 animate-spin" /> Hesaplanıyor…</>
-                  ) : 'Açıkla'}
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {shapByModel && Object.keys(shapByModel).length > 1 && (
+                    <select
+                      value={explainModelId}
+                      onChange={(e) => setExplainModelId(e.target.value)}
+                      className="text-xs rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1"
+                      aria-label="SHAP modeli seç"
+                    >
+                      {Object.keys(shapByModel).map((modelId) => {
+                        const label =
+                          models.find((m) => m.model_id === modelId)?.model_name ?? modelId
+                        return (
+                          <option key={modelId} value={modelId}>
+                            {label}
+                          </option>
+                        )
+                      })}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void runExplain()}
+                    disabled={explaining || !prediction}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                  >
+                    {explaining ? (
+                      <><ArrowPathIcon className="w-3 h-3 animate-spin" /> Hesaplanıyor…</>
+                    ) : 'Açıkla'}
+                  </button>
+                </div>
               </div>
 
-              {shapTop5 ? (
+              {shapTop10 ? (
                 <div className="space-y-2">
                   <p className="text-[11px] text-gray-400 mb-1">
-                    XGBoost SHAP — bu hastaya özgü etki (normalize %)
+                    {explainModelLabel} SHAP — bu hastaya özgü top-10 etki (normalize %)
                   </p>
-                  {shapTop5.map((f, i) => (
+                  {shapTop10.map((f, i) => (
                     <div key={i} className="space-y-0.5">
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-medium">{f.feature}</span>
@@ -550,7 +611,7 @@ export default function SimulatorPage() {
                 </div>
               ) : (
                 <p className="text-xs text-gray-500 py-4 text-center">
-                  "Açıkla" butonuna basın — bu hasta için XGBoost SHAP hesaplanır.
+                  "Açıkla" butonuna basın — bu hasta için tüm ML modellerinin SHAP değerleri hesaplanır.
                 </p>
               )}
             </div>

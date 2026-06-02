@@ -15,6 +15,7 @@ import {
   LeadTimeSummary,
 } from '@/lib/api'
 import clsx from 'clsx'
+import ModelMetricBadges from '@/components/ModelMetricBadges'
 
 /**
  * Ana Dashboard
@@ -48,6 +49,7 @@ const RISK_LEVEL_COLOR: Record<string, string> = {
 export default function Dashboard() {
   const [states, setStates] = useState<PresetState[]>([])
   const [selectedIdx, setSelectedIdx] = useState(0)
+  const [explainModelId, setExplainModelId] = useState('xgboost')
   const [leadTime, setLeadTime] = useState<LeadTimeSummary | null>(null)
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
 
@@ -145,6 +147,7 @@ export default function Dashboard() {
             </h1>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
               Üç örnek hasta profilinin canlı multi-model risk değerlendirmesi.
+              Test metrikleri: AUROC (sıralama) ve AUPRC (seyrek pozitiflerde ayırım).
               Slider üzerinden değer değiştirmek için{' '}
               <Link
                 href="/simulator"
@@ -316,7 +319,18 @@ export default function Dashboard() {
 
                 {/* Top feature katkısı */}
                 {selected.result && selected.result.top_features.length > 0 && (
-                  <TopFeaturesCard features={selected.result.top_features} />
+                  <TopFeaturesCard
+                    features={
+                      selected.result.top_features_by_model[explainModelId] ??
+                      selected.result.top_features
+                    }
+                    modelOptions={selected.result.results.map((r) => ({
+                      id: r.model_id,
+                      label: r.label,
+                    }))}
+                    selectedModelId={explainModelId}
+                    onModelChange={setExplainModelId}
+                  />
                 )}
               </>
             )}
@@ -373,7 +387,8 @@ function ResultRow({ r }: { r: SnapshotModelResult }) {
     <div className="flex items-center gap-3">
       <div className="w-32 flex-shrink-0">
         <div className="text-sm font-medium">{r.label}</div>
-        <div className="text-[10px] text-gray-500">AUROC {r.auroc.toFixed(3)}</div>
+        <div className="text-[10px] text-gray-500">Test seti (h=6)</div>
+        <ModelMetricBadges auroc={r.auroc} auprc={r.auprc} className="text-[10px] text-gray-500" />
       </div>
       <div className="flex-1">
         <div className="h-3 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
@@ -415,13 +430,37 @@ function ResultRow({ r }: { r: SnapshotModelResult }) {
 
 function TopFeaturesCard({
   features,
+  modelOptions,
+  selectedModelId,
+  onModelChange,
 }: {
   features: TopFeatureContribution[]
+  modelOptions: Array<{ id: string; label: string }>
+  selectedModelId: string
+  onModelChange: (modelId: string) => void
 }) {
   const max = Math.max(...features.map((f) => f.importance), 0.0001)
+  const selectedLabel =
+    modelOptions.find((m) => m.id === selectedModelId)?.label ?? selectedModelId
   return (
     <div className="card">
-      <h3 className="text-lg font-semibold mb-4">En Önemli Faktörler</h3>
+      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+        <h3 className="text-lg font-semibold">En Önemli 10 Faktör</h3>
+        {modelOptions.length > 1 && (
+          <select
+            value={selectedModelId}
+            onChange={(e) => onModelChange(e.target.value)}
+            className="text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1"
+            aria-label="SHAP modeli seç"
+          >
+            {modelOptions.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
       <div className="space-y-2">
         {features.map((f, i) => (
           <div key={i}>
@@ -441,7 +480,7 @@ function TopFeaturesCard({
         ))}
       </div>
       <p className="text-xs text-gray-500 mt-3">
-        Hesaplama: XGBoost native <code>feature_importance</code> × |z-score|.
+        {selectedLabel} SHAP — bu hastaya özgü top-10 katkı (mutlak SHAP değerine göre).
       </p>
     </div>
   )

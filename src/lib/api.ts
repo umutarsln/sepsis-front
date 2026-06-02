@@ -211,6 +211,7 @@ export interface ModelDescriptor {
   label: string;
   category: string;
   auroc: number;
+  auprc: number;
   threshold: number;
   is_live: boolean;
   note: string | null;
@@ -221,6 +222,7 @@ export interface SnapshotModelResult {
   label: string;
   category: string;
   auroc: number;
+  auprc: number;
   threshold: number;
   risk_score: number;
   risk_level: 'low' | 'medium' | 'high' | 'critical';
@@ -236,7 +238,10 @@ export interface TopFeatureContribution {
 export interface SnapshotPredictionResponse {
   timestamp: string;
   results: SnapshotModelResult[];
+  /** XGBoost SHAP top-10 (geriye uyumluluk). */
   top_features: TopFeatureContribution[];
+  /** Model bazli SHAP top-10 katkilari (5 ML modeli). */
+  top_features_by_model: Record<string, TopFeatureContribution[]>;
 }
 
 /**
@@ -259,7 +264,8 @@ export interface SnapshotExplainResponse {
     alert: boolean;
     threshold: number;
   }>;
-  shap_top5: ShapContribution[] | null;
+  shap_top10: ShapContribution[] | null;
+  shap_by_model: Record<string, ShapContribution[]> | null;
 }
 
 /**
@@ -311,17 +317,27 @@ interface BackendModelScore {
 /** sepsis-son backend /predict/snapshot/explain ham yaniti. */
 interface BackendSnapshotExplainResponse {
   models: BackendModelScore[];
-  shap_top5: ShapContribution[] | null;
+  shap_top10: ShapContribution[] | null;
+  shap_by_model?: Record<string, ShapContribution[]> | null;
   horizon?: number;
 }
 
-/** Snapshot ML modelleri icin bilinen AUROC degerleri. */
+/** Snapshot ML modelleri icin bilinen AUROC degerleri (Faz 4.6, h=6 test). */
 const SNAPSHOT_MODEL_AUROC: Record<string, number> = {
   logistic_regression: 0.744,
   random_forest: 0.798,
   xgboost: 0.822,
   gradient_boosting: 0.822,
   gaussian_nb: 0.7,
+};
+
+/** Snapshot ML modelleri icin bilinen AUPRC degerleri (Faz 4.6, h=6 test). */
+const SNAPSHOT_MODEL_AUPRC: Record<string, number> = {
+  logistic_regression: 0.109,
+  random_forest: 0.145,
+  xgboost: 0.177,
+  gradient_boosting: 0.164,
+  gaussian_nb: 0.093,
 };
 
 /**
@@ -350,6 +366,20 @@ function featuresToSnapshot(
 }
 
 /**
+ * SHAP katki satirlarini dashboard top_features formatina cevirir.
+ */
+function shapRowsToTopFeatures(
+  rows: ShapContribution[],
+  features: Record<string, number>,
+): TopFeatureContribution[] {
+  return rows.slice(0, 10).map((item) => ({
+    feature: item.feature,
+    raw_value: features[item.feature] ?? 0,
+    importance: item.abs_shap,
+  }));
+}
+
+/**
  * Backend model skorlarini dashboard'un bekledigi SnapshotPredictionResponse'a map eder.
  */
 function mapSnapshotPrediction(
@@ -365,22 +395,36 @@ function mapSnapshotPrediction(
       label: model.model_name,
       category: 'ML',
       auroc: SNAPSHOT_MODEL_AUROC[model.model_id] ?? 0.75,
+      auprc: SNAPSHOT_MODEL_AUPRC[model.model_id] ?? 0.1,
       threshold: model.threshold,
       risk_score: model.risk_score,
       risk_level: bandFromScore(model.risk_score),
       alert: model.alert,
     }));
 
-  const top_features: TopFeatureContribution[] = (raw.shap_top5 ?? []).map((item) => ({
-    feature: item.feature,
-    raw_value: features[item.feature] ?? 0,
-    importance: item.abs_shap,
-  }));
+  const top_features_by_model: Record<string, TopFeatureContribution[]> = {};
+  if (raw.shap_by_model) {
+    for (const [modelId, rows] of Object.entries(raw.shap_by_model)) {
+      if (rows?.length) {
+        top_features_by_model[modelId] = shapRowsToTopFeatures(rows, features);
+      }
+    }
+  }
+
+  const shapRows =
+    raw.shap_top10 ??
+    (raw as BackendSnapshotExplainResponse & { shap_top5?: ShapContribution[] | null })
+      .shap_top5 ??
+    [];
+  const top_features =
+    top_features_by_model.xgboost ??
+    (shapRows.length ? shapRowsToTopFeatures(shapRows, features) : []);
 
   return {
     timestamp: new Date().toISOString(),
     results,
     top_features,
+    top_features_by_model,
   };
 }
 
@@ -414,6 +458,7 @@ function mapModelDescriptor(raw: BackendModelDescriptor): ModelDescriptor {
     label: raw.model_name,
     category: isLive ? 'Snapshot ML' : 'DL (pencere)',
     auroc: raw.auroc,
+    auprc: raw.auprc ?? SNAPSHOT_MODEL_AUPRC[raw.model_id] ?? 0.1,
     threshold: SNAPSHOT_MODEL_THRESHOLDS[raw.model_id] ?? 0.5,
     is_live: isLive,
     note: isLive ? null : 'Snapshot tahmini desteklemez',
@@ -469,7 +514,7 @@ export const simulatorAPI = {
   },
 
   /**
-   * Faz 7: Snapshot tahmin + XGBoost SHAP top-5.
+   * Faz 7: Snapshot tahmin + tum ML modelleri icin SHAP top-10.
    * Sadece "Açıkla" butonuna basıldığında çağrılır (slider hareketi değil).
    */
   explainSnapshot: async (
@@ -736,10 +781,26 @@ export const artifactsAPI = {
   getLeadTime: async (): Promise<LeadTimeSummary> =>
     apiRequest<LeadTimeSummary>('/artifacts/lead-time'),
 
-  getFeatureRanking: async (modelName: string): Promise<FeatureRankingRow[]> =>
-    apiRequest<FeatureRankingRow[]>(`/artifacts/feature-ranking/${modelName}`),
+  /**
+   * XGBoost global SHAP sıralaması (sepsis-son: GET /artifacts/feature-ranking).
+   * modelName verilirse shap-summary fallback kullanilir.
+   */
+  getFeatureRanking: async (modelName?: string): Promise<FeatureRankingRow[]> => {
+    if (modelName && modelName !== 'global') {
+      const rows = await apiRequest<ShapRankingRow[]>(`/artifacts/shap-summary/${modelName}`);
+      return rows.map((row) => ({
+        feature: row.feature,
+        importance: row.mean_abs_shap,
+      }));
+    }
+    const rows = await apiRequest<ShapRankingRow[]>('/artifacts/feature-ranking');
+    return rows.map((row) => ({
+      feature: row.feature,
+      importance: row.mean_abs_shap,
+    }));
+  },
 
-  /** Whitelist'li PNG için tam URL döndürür (img src için). */
+  /** Whitelist'li PNG için tam URL döndürür (sepsis-son backend'de route yok — kullanmayin). */
   figureUrl: (name: string): string => `${API_BASE_URL}/artifacts/figure/${name}`,
 
   /** Faz 7: secilen model icin TP/FP/FN LIME top-10 feature katkilari. */

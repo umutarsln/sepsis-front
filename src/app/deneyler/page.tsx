@@ -129,6 +129,11 @@ export default function DeneylerPage() {
                 tier&apos;lari ve hangi kosunun Faz 6 tablosuna girdigi. Ayni mimari farkli config ile kac AUROC
                 verdi sorusunun cevabi burada.
               </p>
+              <p className="mt-2 text-gray-600 dark:text-gray-400">
+                <strong>Faz 5 tier ipucu:</strong> GRU thorough tier, standard&apos;a gore ~+0.005 AUROC
+                saglar; final benchmark tablosuna yalnizca <strong>thorough</strong> kosulari girer
+                (yildizli satirlar).
+              </p>
             </div>
           </div>
         </div>
@@ -215,6 +220,9 @@ export default function DeneylerPage() {
                   <th className="text-left py-3 px-4 font-semibold text-sm text-gray-700 dark:text-gray-300">
                     Deney
                   </th>
+                  <th className="text-center py-3 px-2 font-semibold text-sm text-gray-700 dark:text-gray-300 w-16">
+                    Final
+                  </th>
                   <th className="text-left py-3 px-4 font-semibold text-sm text-gray-700 dark:text-gray-300">
                     Faz / Tier
                   </th>
@@ -238,14 +246,14 @@ export default function DeneylerPage() {
               <tbody>
                 {loading && (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-gray-500">
+                    <td colSpan={8} className="py-8 text-center text-gray-500">
                       Deneyler yukleniyor…
                     </td>
                   </tr>
                 )}
                 {!loading && filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-gray-500">
+                    <td colSpan={8} className="py-8 text-center text-gray-500">
                       Bu filtrede deney bulunamadi.
                     </td>
                   </tr>
@@ -275,6 +283,16 @@ export default function DeneylerPage() {
                           <p className="text-xs text-gray-500">{exp.id}</p>
                         </div>
                       </div>
+                    </td>
+                    <td className="py-3 px-2 text-center">
+                      {exp.is_final ? (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-700 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300 px-1.5 py-0.5 rounded-full">
+                          <StarIcon className="w-3 h-3" />
+                          Final
+                        </span>
+                      ) : (
+                        <span className="text-gray-300 dark:text-gray-600">—</span>
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       <span className="text-sm">{exp.phase}</span>

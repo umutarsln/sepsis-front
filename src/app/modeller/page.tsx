@@ -20,6 +20,7 @@ import {
   Cell,
 } from 'recharts'
 import { ClockIcon, BoltIcon } from '@heroicons/react/24/outline'
+import clsx from 'clsx'
 import { api, Faz6ComparisonRow } from '@/lib/api'
 
 /**
@@ -73,10 +74,16 @@ export default function ModellerPage() {
     void load()
   }, [])
 
-  /** Kart + grafikler icin siralanmis model listesi. */
+  /** Kart + grafikler icin siralanmis model listesi (aile, sonra AUROC). */
   const models = useMemo(() => {
+    const familyOrder: Record<string, number> = { ML: 0, DL: 1, Transformer: 2 }
     return [...comparisonRows]
-      .sort((a, b) => b.auroc - a.auroc)
+      .sort((a, b) => {
+        const fa = familyOrder[a.family] ?? 9
+        const fb = familyOrder[b.family] ?? 9
+        if (fa !== fb) return fa - fb
+        return b.auroc - a.auroc
+      })
       .map((r) => ({
         ...r,
         color: FAMILY_COLORS[r.family] ?? '#6b7280',
@@ -84,6 +91,24 @@ export default function ModellerPage() {
         shortName: shortModelName(r),
       }))
   }, [comparisonRows])
+
+  const bestAurocModel = useMemo(
+    () => [...comparisonRows].sort((a, b) => b.auroc - a.auroc)[0] ?? null,
+    [comparisonRows],
+  )
+
+  const bestAuprcModel = useMemo(
+    () => [...comparisonRows].sort((a, b) => b.auprc - a.auprc)[0] ?? null,
+    [comparisonRows],
+  )
+
+  const bestMlLeadModel = useMemo(
+    () =>
+      [...comparisonRows]
+        .filter((r) => r.family === 'ML' && r.median_lead_h != null)
+        .sort((a, b) => (b.median_lead_h ?? 0) - (a.median_lead_h ?? 0))[0] ?? null,
+    [comparisonRows],
+  )
 
   const dlRows = useMemo(() => models.filter((m) => m.family !== 'ML'), [models])
 
@@ -119,6 +144,17 @@ export default function ModellerPage() {
     [models],
   )
 
+  /** AUPRC cubuk grafigi — tum 9 model (seyrek pozitif gorevi). */
+  const auprcBarData = useMemo(
+    () =>
+      models.map((m) => ({
+        name: m.shortName,
+        auprc: Number(m.auprc.toFixed(4)),
+        fill: m.color,
+      })),
+    [models],
+  )
+
   /** Lead-time cubuk grafigi — ML modelleri icin medyan saat. */
   const leadTimeBarData = useMemo(
     () =>
@@ -132,7 +168,12 @@ export default function ModellerPage() {
     [models],
   )
 
-  const bestModel = models[0] ?? null
+  const bestModel = bestAurocModel
+
+  const dlBestAuprc = useMemo(
+    () => [...dlRows].sort((a, b) => b.auprc - a.auprc)[0] ?? null,
+    [dlRows],
+  )
 
   return (
     <DashboardLayout>
@@ -147,7 +188,8 @@ export default function ModellerPage() {
           </h1>
           <p className="text-gray-600 dark:text-gray-400 text-sm">
             PhysioNet 2019 test seti — Faz 6: 5 ML snapshot (h=6) + 4 DL pencere modeli
-            (LSTM, GRU, BiGRU+Attention, Transformer; h=6, w=24).
+            (LSTM, GRU, BiGRU+Attention, Transformer; h=6, w=24). Düşük pozitif oranında
+            AUPRC, AUROC ile birlikte değerlendirilmelidir.
           </p>
         </div>
 
@@ -257,8 +299,31 @@ export default function ModellerPage() {
                   <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                   <YAxis domain={[0.65, 0.88]} tickFormatter={(v) => v.toFixed(2)} />
                   <Tooltip formatter={(v: number) => v.toFixed(4)} />
-                  <Bar dataKey="auroc" radius={[4, 4, 0, 0]}>
+                  <Bar dataKey="auroc" name="AUROC" radius={[4, 4, 0, 0]}>
                     {aurocBarData.map((entry, i) => (
+                      <Cell key={i} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {auprcBarData.length > 0 && (
+            <div className="card">
+              <h3 className="text-lg font-semibold mb-4">AUPRC Karşılaştırması (9 Model)</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Precision–recall eğrisi altı alan; sepsis pozitifleri seyrekken (&lt;3%) klinik
+                ayırım için AUROC&apos;dan daha bilgilendirici olabilir.
+              </p>
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={auprcBarData} margin={{ bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                  <YAxis domain={[0, 0.35]} tickFormatter={(v) => v.toFixed(2)} />
+                  <Tooltip formatter={(v: number) => v.toFixed(4)} />
+                  <Bar dataKey="auprc" name="AUPRC" radius={[4, 4, 0, 0]}>
+                    {auprcBarData.map((entry, i) => (
                       <Cell key={i} fill={entry.fill} />
                     ))}
                   </Bar>
@@ -298,14 +363,20 @@ export default function ModellerPage() {
                     <th className="text-right py-2 px-3">AUPRC</th>
                     <th className="text-right py-2 px-3">F1</th>
                     <th className="text-right py-2 px-3">Sens@85</th>
-                    <th className="text-right py-2 px-3">Lead (h)</th>
+                    <th className="text-right py-2 px-3">Lead med. (h)</th>
+                    <th className="text-right py-2 px-3">Lead ort. (h)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {models.map((r) => (
                     <tr
                       key={r.model_id}
-                      className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                      className={clsx(
+                        'border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50',
+                        (r.model_id === bestAurocModel?.model_id ||
+                          r.model_id === bestAuprcModel?.model_id) &&
+                          'bg-purple-50/50 dark:bg-purple-900/10',
+                      )}
                     >
                       <td className="py-2 px-3">
                         <span
@@ -321,12 +392,23 @@ export default function ModellerPage() {
                       <td className="py-2 px-3 font-medium">{r.model_name}</td>
                       <td className="py-2 px-3 text-right tabular-nums font-semibold">
                         {r.auroc.toFixed(4)}
+                        {r.model_id === bestAurocModel?.model_id && (
+                          <span className="ml-1 text-[10px] text-purple-600">↑ AUROC</span>
+                        )}
                       </td>
-                      <td className="py-2 px-3 text-right tabular-nums">{r.auprc.toFixed(4)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums text-indigo-700 dark:text-indigo-300">
+                        {r.auprc.toFixed(4)}
+                        {r.model_id === bestAuprcModel?.model_id && (
+                          <span className="ml-1 text-[10px] text-indigo-600">↑ AUPRC</span>
+                        )}
+                      </td>
                       <td className="py-2 px-3 text-right tabular-nums">{r.f1.toFixed(3)}</td>
                       <td className="py-2 px-3 text-right tabular-nums">{r.sens_spec85.toFixed(3)}</td>
                       <td className="py-2 px-3 text-right tabular-nums">
                         {r.median_lead_h != null ? r.median_lead_h.toFixed(0) : '—'}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums">
+                        {r.mean_lead_h != null ? r.mean_lead_h.toFixed(1) : '—'}
                       </td>
                     </tr>
                   ))}
@@ -340,17 +422,64 @@ export default function ModellerPage() {
               <div className="flex items-center mb-3">
                 <BoltIcon className="w-6 h-6 text-purple-600 mr-2" />
                 <h3 className="text-lg font-semibold text-purple-900 dark:text-purple-100">
-                  En Yüksek AUROC: {bestModel.model_name} ({bestModel.typeLabel})
+                  Öne Çıkan Modeller
                 </h3>
               </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 text-sm">
+                <div className="p-3 rounded-lg bg-white/60 dark:bg-gray-900/40">
+                  <p className="text-xs text-gray-500 mb-1">En yüksek AUROC</p>
+                  <p className="font-semibold">
+                    {bestModel.model_name}{' '}
+                    <span className="text-purple-600 tabular-nums">
+                      ({bestModel.auroc.toFixed(3)})
+                    </span>
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    AUPRC {bestModel.auprc.toFixed(3)} ·{' '}
+                    {FAMILY_LABEL[bestModel.family] ?? bestModel.family}
+                  </p>
+                </div>
+                {bestAuprcModel && bestAuprcModel.model_id !== bestModel.model_id && (
+                  <div className="p-3 rounded-lg bg-white/60 dark:bg-gray-900/40">
+                    <p className="text-xs text-gray-500 mb-1">En yüksek AUPRC</p>
+                    <p className="font-semibold">
+                      {bestAuprcModel.model_name}{' '}
+                      <span className="text-indigo-600 tabular-nums">
+                        ({bestAuprcModel.auprc.toFixed(3)})
+                      </span>
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      AUROC {bestAuprcModel.auroc.toFixed(3)} · seyrek pozitif ayırımı
+                    </p>
+                  </div>
+                )}
+                {bestMlLeadModel && (
+                  <div className="p-3 rounded-lg bg-white/60 dark:bg-gray-900/40">
+                    <p className="text-xs text-gray-500 mb-1">En iyi ML lead-time (medyan)</p>
+                    <p className="font-semibold">
+                      {bestMlLeadModel.model_name}{' '}
+                      <span className="text-blue-600 tabular-nums">
+                        ({bestMlLeadModel.median_lead_h?.toFixed(0)} saat)
+                      </span>
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">Snapshot ML · erken uyarı süresi</p>
+                  </div>
+                )}
+              </div>
               <p className="text-gray-700 dark:text-gray-300 mb-4 text-sm">
-                Faz 6 test setinde {bestModel.auroc.toFixed(3)} AUROC. DL ailesinde en yüksek
-                AUPRC {dlRows[0]?.model_name ?? '—'} ({dlRows[0]?.auprc.toFixed(3) ?? '—'});
-                ML snapshot içinde XGBoost/Gradyan Artirma ~0.82 AUROC bandında.
+                DL ailesinde en yüksek AUPRC{' '}
+                <strong>{dlBestAuprc?.model_name ?? '—'}</strong>
+                {dlBestAuprc && (
+                  <span className="tabular-nums text-indigo-600">
+                    {' '}
+                    ({dlBestAuprc.auprc.toFixed(3)})
+                  </span>
+                )}
+                ; ML snapshot bandında XGBoost ~0.18 AUPRC, ~0.82 AUROC.
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <StatBlock label="AUROC" value={bestModel.auroc.toFixed(3)} />
-                <StatBlock label="AUPRC" value={bestModel.auprc.toFixed(3)} />
+                <StatBlock label="AUPRC" value={bestModel.auprc.toFixed(3)} highlight />
                 <StatBlock label="Sens@Spec85" value={`${(bestModel.sens_spec85 * 100).toFixed(1)}%`} />
                 <StatBlock label="F1" value={bestModel.f1.toFixed(3)} />
               </div>
@@ -371,10 +500,25 @@ function MetricRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-function StatBlock({ label, value }: { label: string; value: string }) {
+function StatBlock({
+  label,
+  value,
+  highlight = false,
+}: {
+  label: string
+  value: string
+  highlight?: boolean
+}) {
   return (
     <div className="text-center">
-      <p className="text-2xl font-bold text-purple-600 tabular-nums">{value}</p>
+      <p
+        className={clsx(
+          'text-2xl font-bold tabular-nums',
+          highlight ? 'text-indigo-600' : 'text-purple-600',
+        )}
+      >
+        {value}
+      </p>
       <p className="text-sm text-gray-600 dark:text-gray-400">{label}</p>
     </div>
   )

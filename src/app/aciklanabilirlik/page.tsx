@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import DashboardLayout from '@/components/DashboardLayout'
 import { motion } from 'framer-motion'
 import {
@@ -18,7 +18,16 @@ import {
   YAxis,
 } from 'recharts'
 import clsx from 'clsx'
-import { api, FeatureRankingRow, ShapRankingRow, AttentionSummary, LimeExplanation, LimePatientType, WindowPredictionResponse, HourlySnapshot } from '@/lib/api'
+import {
+  api,
+  DemoPatientSummary,
+  ShapRankingRow,
+  AttentionSummary,
+  LimeExplanation,
+  LimePatientType,
+  WindowPredictionResponse,
+  HourlySnapshot,
+} from '@/lib/api'
 import LimeExplanationPanel from '@/components/LimeExplanationPanel'
 import DlWindowExplainPanel from '@/components/DlWindowExplainPanel'
 
@@ -36,10 +45,10 @@ function toWindowSnapshot(step: HourlySnapshot): Record<string, number> {
  * Açıklanabilirlik (Explainability) Sayfası
  *
  * Üç bölüm:
- *   1. SHAP global feature ranking - model bazlı bar chart
- *   2. Attention heatmap'leri (BiGRU + Transformer, test seti ort.)
- *   3. DL zaman adımı açıklaması (attention + gradient, demo hasta)
- *   4. LIME örnek hasta açıklamaları (JSON + bar chart)
+ *   1. Global SHAP (XGBoost) + model bazlı SHAP bar chart
+ *   2. Popülasyon attention özeti (BiGRU + Transformer)
+ *   3. DL zaman adımı açıklaması (demo hasta seçilebilir)
+ *   4. LIME örnek hasta açıklamaları (TP/FP/FN)
  */
 
 type ShapModel = 'xgboost' | 'random_forest' | 'logistic_regression'
@@ -52,39 +61,48 @@ const SHAP_MODELS: Array<{ id: ShapModel; label: string }> = [
 
 export default function AciklanabilirlikPage() {
   const [shapModel, setShapModel] = useState<ShapModel>('xgboost')
-  const [shapData, setShapData] = useState<FeatureRankingRow[]>([])
-  // Faz 7: Sepsis-son SHAP global ranking (mean_abs_shap)
   const [shapSonData, setShapSonData] = useState<ShapRankingRow[]>([])
-  const [globalRanking, setGlobalRanking] = useState<FeatureRankingRow[]>([])
+  const [globalRanking, setGlobalRanking] = useState<ShapRankingRow[]>([])
   const [limeType, setLimeType] = useState<LimePatientType>('tp')
   const [limeData, setLimeData] = useState<LimeExplanation[]>([])
   const [loadingLime, setLoadingLime] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loadingShap, setLoadingShap] = useState(false)
-  // Faz 7: Attention
+  const [loadingGlobal, setLoadingGlobal] = useState(false)
   const [attnModel, setAttnModel] = useState<'bigru_attn' | 'transformer'>('bigru_attn')
   const [attnData, setAttnData] = useState<AttentionSummary | null>(null)
   const [loadingAttn, setLoadingAttn] = useState(false)
+  const [demoPatients, setDemoPatients] = useState<DemoPatientSummary[]>([])
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
   const [dlSeriesResult, setDlSeriesResult] = useState<WindowPredictionResponse | null>(null)
   const [loadingDlExplain, setLoadingDlExplain] = useState(false)
   const [populationAttention, setPopulationAttention] = useState<
     Partial<Record<'bigru_attn' | 'transformer', AttentionSummary>>
   >({})
 
-  // SHAP global ranking yükle (eski fallback)
+  /** XGBoost global SHAP sıralamasını yükler. */
   useEffect(() => {
     const load = async () => {
+      setLoadingGlobal(true)
       try {
-        const rows = await api.artifacts.getFeatureRanking('global')
-        setGlobalRanking(rows.slice(0, 15))
+        const rows = await api.artifacts.getFeatureRanking()
+        setGlobalRanking(
+          rows.slice(0, 15).map((row, index) => ({
+            feature: row.feature,
+            mean_abs_shap: row.importance,
+            rank: index + 1,
+          })),
+        )
       } catch {
-        // Sessiz — eski backend yoksa gösterme
+        setGlobalRanking([])
+      } finally {
+        setLoadingGlobal(false)
       }
     }
     void load()
   }, [])
 
-  // Model değişince Faz-7 SHAP yükle (sepsis-son backend)
+  /** Model değişince SHAP global özetini yükler. */
   useEffect(() => {
     const load = async () => {
       setLoadingShap(true)
@@ -92,15 +110,9 @@ export default function AciklanabilirlikPage() {
       try {
         const rows = await api.artifacts.getShapSummary(shapModel)
         setShapSonData(rows.slice(0, 15))
-      } catch {
-        // Fallback: eski endpoint dene
-        try {
-          const rows = await api.artifacts.getFeatureRanking(shapModel)
-          setShapData(rows.slice(0, 15))
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : 'SHAP yüklenemedi'
-          setError(msg)
-        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'SHAP yüklenemedi'
+        setError(msg)
       } finally {
         setLoadingShap(false)
       }
@@ -108,7 +120,7 @@ export default function AciklanabilirlikPage() {
     void load()
   }, [shapModel])
 
-  // Attention verisi yükle (sepsis-son backend)
+  /** Attention verisi yükler. */
   useEffect(() => {
     const load = async () => {
       setLoadingAttn(true)
@@ -124,7 +136,7 @@ export default function AciklanabilirlikPage() {
     void load()
   }, [attnModel])
 
-  // LIME: secili SHAP modeli ile ayni ML modelinden ornek aciklamalar
+  /** Seçili ML modeli için LIME örneklerini yükler. */
   useEffect(() => {
     const load = async () => {
       setLoadingLime(true)
@@ -140,42 +152,52 @@ export default function AciklanabilirlikPage() {
     void load()
   }, [shapModel])
 
-  // DL: demo hastada canli attention / gradient saliency
+  /** Demo hasta listesini yükler. */
   useEffect(() => {
-    const load = async () => {
-      setLoadingDlExplain(true)
+    void (async () => {
       try {
         const [patients, bigru, transformer] = await Promise.all([
           api.windowDemo.listDemoPatients(),
           api.artifacts.getAttention('bigru_attn').catch(() => null),
           api.artifacts.getAttention('transformer').catch(() => null),
         ])
+        setDemoPatients(patients)
         setPopulationAttention({
           ...(bigru ? { bigru_attn: bigru } : {}),
           ...(transformer ? { transformer } : {}),
         })
-        if (!patients.length) {
-          setDlSeriesResult(null)
-          return
-        }
-        const pid = patients[0].patient_id
-        const win = await api.windowDemo.getPatientWindow(pid, 24)
-        const series = win.series.map(toWindowSnapshot)
-        const lastSnap = series[series.length - 1]
-        const result = await api.windowDemo.predictWindow({
-          snapshot: lastSnap,
-          series,
-          repeat_hours: 24,
-        })
-        setDlSeriesResult(result)
+        if (patients.length) setSelectedPatientId(patients[0].patient_id)
       } catch {
-        setDlSeriesResult(null)
-      } finally {
-        setLoadingDlExplain(false)
+        setDemoPatients([])
       }
-    }
-    void load()
+    })()
   }, [])
+
+  /** Seçili demo hasta için DL pencere tahmini ve timestep açıklamasını yükler. */
+  const loadDlExplain = useCallback(async (patientId: string) => {
+    setLoadingDlExplain(true)
+    try {
+      const win = await api.windowDemo.getPatientWindow(patientId, 24)
+      const series = win.series.map(toWindowSnapshot)
+      const lastSnap = series[series.length - 1]
+      const result = await api.windowDemo.predictWindow({
+        snapshot: lastSnap,
+        series,
+        repeat_hours: 24,
+      })
+      setDlSeriesResult(result)
+    } catch {
+      setDlSeriesResult(null)
+    } finally {
+      setLoadingDlExplain(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (selectedPatientId) void loadDlExplain(selectedPatientId)
+  }, [selectedPatientId, loadDlExplain])
+
+  const maxGlobalShap = globalRanking[0]?.mean_abs_shap ?? 1
 
   return (
     <DashboardLayout>
@@ -189,8 +211,7 @@ export default function AciklanabilirlikPage() {
             Açıklanabilirlik
           </h1>
           <p className="text-gray-600 dark:text-gray-400 text-sm">
-            ML modelleri için SHAP/LIME; DL modelleri için attention ve gradient
-            saliency ile kararların arkasındaki örüntüler.
+            Global SHAP · örnek LIME (TP/FP/FN) · DL hangi saate baktı?
           </p>
         </div>
 
@@ -201,40 +222,42 @@ export default function AciklanabilirlikPage() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          {/* Global Ranking */}
+          {/* Global SHAP — XGBoost */}
           <div className="card lg:col-span-1">
             <div className="flex items-center mb-3">
               <ChartBarIcon className="w-5 h-5 text-purple-600 mr-2" />
-              <h3 className="text-base font-semibold">
-                Global Feature Sıralaması
-              </h3>
+              <h3 className="text-base font-semibold">Global SHAP (XGBoost)</h3>
             </div>
             <p className="text-xs text-gray-500 mb-3">
-              3 sklearn modelinin Top-20 SHAP listesinde kaç kez göründüğü.
+              Test seti üzerinde ortalama |SHAP| — en etkili 15 özellik.
             </p>
-            <div className="space-y-1.5">
-              {globalRanking.map((row, i) => (
-                <div key={row.feature} className="flex items-center gap-2">
-                  <span className="text-xs text-gray-400 w-5 text-right">
-                    {i + 1}
-                  </span>
-                  <span className="text-xs font-medium flex-1 truncate">
-                    {row.feature}
-                  </span>
-                  <div className="flex-1">
-                    <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-purple-500"
-                        style={{ width: `${(row.importance / 3) * 100}%` }}
-                      />
+            {loadingGlobal ? (
+              <p className="text-sm text-gray-500 py-6 text-center">Yükleniyor…</p>
+            ) : globalRanking.length === 0 ? (
+              <p className="text-sm text-gray-500 py-6 text-center">Veri bulunamadı.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {globalRanking.map((row, i) => (
+                  <div key={row.feature} className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400 w-5 text-right">{i + 1}</span>
+                    <span className="text-xs font-medium flex-1 truncate">{row.feature}</span>
+                    <div className="flex-1">
+                      <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-purple-500"
+                          style={{
+                            width: `${(row.mean_abs_shap / maxGlobalShap) * 100}%`,
+                          }}
+                        />
+                      </div>
                     </div>
+                    <span className="text-xs text-gray-500 tabular-nums w-12 text-right">
+                      {row.mean_abs_shap.toFixed(3)}
+                    </span>
                   </div>
-                  <span className="text-xs text-gray-500 tabular-nums w-8 text-right">
-                    {row.importance.toFixed(0)}/3
-                  </span>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* SHAP per-model */}
@@ -242,10 +265,7 @@ export default function AciklanabilirlikPage() {
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <PuzzlePieceIcon className="w-5 h-5 text-blue-600 mr-1" />
-                <h3 className="text-base font-semibold">SHAP Top-15</h3>
-                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-                  🌍 Global
-                </span>
+                <h3 className="text-base font-semibold">Model Bazlı SHAP Top-15</h3>
               </div>
               <div className="flex gap-1.5">
                 {SHAP_MODELS.map((m) => (
@@ -266,15 +286,17 @@ export default function AciklanabilirlikPage() {
               </div>
             </div>
             <p className="text-xs text-gray-500 mb-3">
-              Global SHAP sıralaması. Aşağıdaki LIME paneli de aynı model seçimini kullanır.
+              Aşağıdaki LIME paneli de aynı model seçimini kullanır.
             </p>
             {loadingShap ? (
               <p className="text-sm text-gray-500 py-8 text-center">Yükleniyor…</p>
             ) : shapSonData.length > 0 ? (
-              // Faz 7: Sepsis-son backend SHAP (mean_abs_shap)
               <ResponsiveContainer width="100%" height={400}>
                 <BarChart
-                  data={shapSonData.map((r) => ({ feature: r.feature, importance: r.mean_abs_shap }))}
+                  data={shapSonData.map((r) => ({
+                    feature: r.feature,
+                    importance: r.mean_abs_shap,
+                  }))}
                   layout="vertical"
                   margin={{ top: 5, right: 10, left: 80, bottom: 5 }}
                 >
@@ -288,45 +310,20 @@ export default function AciklanabilirlikPage() {
                   <Bar dataKey="importance" fill="#3b82f6" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
-            ) : shapData.length > 0 ? (
-              // Fallback: eski endpoint
-              <ResponsiveContainer width="100%" height={400}>
-                <BarChart
-                  data={shapData}
-                  layout="vertical"
-                  margin={{ top: 5, right: 10, left: 80, bottom: 5 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis dataKey="feature" type="category" tick={{ fontSize: 11 }} width={100} />
-                  <Tooltip formatter={(v: number) => v.toFixed(4)} contentStyle={{ borderRadius: 8, fontSize: 12 }} />
-                  <Bar dataKey="importance" fill="#3b82f6" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
             ) : (
               <p className="text-sm text-gray-500 py-8 text-center">
                 Bu model için SHAP verisi bulunamadı.
               </p>
             )}
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-              <FigureFrame
-                title="SHAP Bar Plot"
-                src={api.artifacts.figureUrl(`shap_bar_${shapModel}.png`)}
-              />
-              <FigureFrame
-                title="SHAP Summary Plot"
-                src={api.artifacts.figureUrl(`shap_summary_${shapModel}.png`)}
-              />
-            </div>
           </div>
         </div>
 
-        {/* Attention */}
+        {/* Popülasyon attention */}
         <div className="card mb-6">
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <EyeIcon className="w-5 h-5 text-green-600 mr-1" />
-              <h3 className="text-base font-semibold">Attention Heatmap</h3>
+              <h3 className="text-base font-semibold">Popülasyon Attention Özeti</h3>
             </div>
             <div className="flex gap-1.5">
               {[
@@ -350,8 +347,7 @@ export default function AciklanabilirlikPage() {
             </div>
           </div>
           <p className="text-xs text-gray-500 mb-3">
-            Test seti pozitif örneklerinde hesaplanan ortalama attention — hangi
-            saatlerin genelde kritik olduğunu gösterir (popülasyon düzeyi).
+            Test seti pozitif örneklerinde ortalama attention — hangi saatler genelde kritik?
           </p>
           {loadingAttn ? (
             <p className="text-sm text-gray-500 py-6 text-center">Yükleniyor…</p>
@@ -362,8 +358,6 @@ export default function AciklanabilirlikPage() {
                   data={attnData.mean.map((v, i) => ({
                     hour: `S${i + 1}`,
                     mean: v,
-                    iqr_lo: attnData.iqr_lo[i],
-                    iqr_hi: attnData.iqr_hi[i],
                   }))}
                   margin={{ top: 5, right: 10, left: 0, bottom: 20 }}
                 >
@@ -378,21 +372,43 @@ export default function AciklanabilirlikPage() {
                 </BarChart>
               </ResponsiveContainer>
               <p className="text-[11px] text-gray-400 mt-1">
-                En yoğun saat(ler): {attnData.top3_hours.map((h) => `S${h}`).join(', ')} · n={attnData.n_samples} pencere
+                En yoğun saat(ler): {attnData.top3_hours.map((h) => `S${h}`).join(', ')} · n=
+                {attnData.n_samples} pencere
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <FigureFrame
-                title="BiGRU Attention (24 saat)"
-                src={api.artifacts.figureUrl('attention_heatmap_bigru_24h.png')}
-              />
-              <FigureFrame
-                title="Transformer Attention (24 saat)"
-                src={api.artifacts.figureUrl('attention_heatmap_transformer_24h.png')}
-              />
-            </div>
+            <p className="text-sm text-gray-500 py-6 text-center">Attention verisi bulunamadı.</p>
           )}
+        </div>
+
+        {/* DL zaman adımı — hasta seçici */}
+        <div className="card mb-4">
+          <h3 className="text-sm font-semibold mb-2">DL Demo Hasta Seçimi</h3>
+          <div className="flex flex-wrap gap-2">
+            {demoPatients.map((p) => (
+              <button
+                key={p.patient_id}
+                type="button"
+                onClick={() => setSelectedPatientId(p.patient_id)}
+                className={clsx(
+                  'text-xs px-2.5 py-1.5 rounded-md border font-mono',
+                  selectedPatientId === p.patient_id
+                    ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30'
+                    : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800',
+                )}
+              >
+                {p.patient_id}
+                <span
+                  className={clsx(
+                    'ml-1.5 px-1 rounded',
+                    p.sepsis ? 'text-red-600' : 'text-green-600',
+                  )}
+                >
+                  {p.sepsis ? 'S+' : 'S−'}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <DlWindowExplainPanel
@@ -410,33 +426,5 @@ export default function AciklanabilirlikPage() {
         />
       </motion.div>
     </DashboardLayout>
-  )
-}
-
-
-function FigureFrame({ title, src }: { title: string; src: string }) {
-  const [errored, setErrored] = useState(false)
-  if (errored) {
-    return (
-      <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-700 p-6 text-center text-xs text-gray-500">
-        {title || 'Görsel'} yüklenemedi.
-      </div>
-    )
-  }
-  return (
-    <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-white">
-      {title && (
-        <div className="px-3 py-2 text-xs font-medium border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-          {title}
-        </div>
-      )}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt={title}
-        className="w-full h-auto"
-        onError={() => setErrored(true)}
-      />
-    </div>
   )
 }

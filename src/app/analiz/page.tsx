@@ -171,6 +171,11 @@ export default function AnalizPage() {
           <div className="flex gap-3">
             <InformationCircleIcon className="w-6 h-6 text-blue-600 shrink-0 mt-0.5" />
             <div className="text-sm text-gray-700 dark:text-gray-300">
+              <p className="mb-2">
+                <strong>PhysioNet 2019 Challenge</strong> ICU verisi; etiketleme{' '}
+                <strong>Sepsis-3</strong> (SOFA artışı + enfeksiyon şüphesi) standardına uygundur.
+                Kohort dengesizdir (~%6 sepsis); model eğitimi için train/val/test split dondurulmuştur.
+              </p>
               <p>
                 Veriler <strong>Faz 2</strong> (<code>eda_summary.json</code>) ve{' '}
                 <strong>Faz 3</strong> (<code>splits.json</code>, <code>feature_stats.json</code>)
@@ -393,6 +398,24 @@ export default function AnalizPage() {
             )}
           </motion.div>
         </div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.75 }}
+          className="card mb-6"
+        >
+          <h3 className="text-lg font-semibold mb-1">Lab Değerleri Dağılımı (Faz 2 EDA)</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Sepsis (+) ve sepsis (−) hastalar arasında lab kutuları — tez Faz 2 çıktısı.
+          </p>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/thesis/figures/lab_boxplots.png"
+            alt="Lab değerleri kutu grafikleri — sepsis vs non-sepsis"
+            className="w-full rounded-lg border border-gray-200 dark:border-gray-700"
+          />
+        </motion.div>
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
