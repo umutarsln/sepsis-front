@@ -117,8 +117,8 @@ export default function DlPencerePage() {
       const series = win.series.map(toSnapshot)
       const lastSnap = series[series.length - 1]
       const [rep, ser] = await Promise.all([
-        api.windowDemo.predictWindow({ snapshot: lastSnap, repeat_hours: 24 }),
-        api.windowDemo.predictWindow({ snapshot: lastSnap, series, repeat_hours: 24 }),
+        api.windowDemo.predictWindow({ snapshot: lastSnap, repeat_hours: 24, patientId: pid }),
+        api.windowDemo.predictWindow({ snapshot: lastSnap, series, repeat_hours: 24, patientId: pid }),
       ])
       setRepeatResult(rep)
       setSeriesResult(ser)

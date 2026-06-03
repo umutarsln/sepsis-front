@@ -21,7 +21,7 @@ import {
 } from 'recharts'
 import { ClockIcon, BoltIcon } from '@heroicons/react/24/outline'
 import clsx from 'clsx'
-import { api, Faz6ComparisonRow } from '@/lib/api'
+import { api, Faz6ComparisonRow, HorizonComparisonRow } from '@/lib/api'
 
 /**
  * Model Karşılaştırma Sayfası
@@ -59,13 +59,18 @@ function shortModelName(row: Faz6ComparisonRow): string {
 
 export default function ModellerPage() {
   const [comparisonRows, setComparisonRows] = useState<Faz6ComparisonRow[]>([])
+  const [horizonRows, setHorizonRows] = useState<HorizonComparisonRow[]>([])
   const [artifactError, setArtifactError] = useState<string | null>(null)
 
   useEffect(() => {
     const load = async () => {
       try {
-        const rows = await api.artifacts.getFaz6Comparison()
+        const [rows, horizon] = await Promise.all([
+          api.artifacts.getFaz6Comparison(),
+          api.artifacts.getHorizonComparison().catch(() => []),
+        ])
         setComparisonRows(rows)
+        setHorizonRows(horizon)
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Yükleme hatası'
         setArtifactError(msg)
@@ -227,6 +232,50 @@ export default function ModellerPage() {
               </p>
             </div>
           </div>
+
+          {horizonRows.length > 0 && (
+            <div className="card overflow-x-auto">
+              <h3 className="text-lg font-semibold mb-2">
+                Snapshot ML — Ufuk Karşılaştırması (Faz 4.7)
+              </h3>
+              <p className="text-xs text-gray-500 mb-4">
+                h=6 satırında XGB/RF Faz 4.6 Optuna; LR/GB/GNB Faz 4 baseline.
+              </p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700">
+                    <th className="text-left py-2 px-3">Model</th>
+                    <th className="text-right py-2 px-3">h=0 AUROC</th>
+                    <th className="text-right py-2 px-3">h=6 AUROC</th>
+                    <th className="text-right py-2 px-3">h=24 AUROC</th>
+                    <th className="text-right py-2 px-3">h=0 AUPRC</th>
+                    <th className="text-right py-2 px-3">h=6 AUPRC</th>
+                    <th className="text-right py-2 px-3">h=24 AUPRC</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {horizonRows.map((row) => (
+                    <tr
+                      key={row.model_id}
+                      className="border-b border-gray-100 dark:border-gray-800"
+                    >
+                      <td className="py-2 px-3 font-medium">{row.model_name}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">{row.h0_auroc.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums font-semibold text-indigo-700 dark:text-indigo-300">
+                        {row.h6_auroc.toFixed(3)}
+                      </td>
+                      <td className="py-2 px-3 text-right tabular-nums">{row.h24_auroc.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">{row.h0_auprc.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums">{row.h6_auprc.toFixed(3)}</td>
+                      <td className="py-2 px-3 text-right tabular-nums text-emerald-700 dark:text-emerald-300">
+                        {row.h24_auprc.toFixed(3)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {models.map((model, index) => (

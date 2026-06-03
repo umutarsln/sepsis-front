@@ -105,9 +105,16 @@ export default function DlWindowExplainPanel({
       ) : !activeModel ? (
         <p className="text-sm text-gray-500 py-10 text-center">Model sonucu bulunamadı.</p>
       ) : chartData.length === 0 ? (
-        <p className="text-sm text-gray-500 py-10 text-center">
-          Bu model için açıklama üretilemedi.
-        </p>
+        <div className="text-sm text-gray-500 py-10 text-center space-y-2 px-4">
+          <p>{explainUnavailableMessage(selectedModel, activeModel)}</p>
+          {isGradientModel(selectedModel) && (
+            <p className="text-xs text-gray-400 max-w-lg mx-auto">
+              Geliştirme sunucusunda LSTM/GRU/Transformer gradient açıklaması macOS’ta
+              varsayılan kapalıdır (<code className="text-[10px]">ENABLE_GRADIENT_SALIENCY=1</code>).
+              BiGRU+Attn sekmesi attention ile çalışmaya devam eder.
+            </p>
+          )}
+        </div>
       ) : (
         <>
           <ModelSummaryRow model={activeModel} methodLabel={methodLabel} />
@@ -205,6 +212,30 @@ function hasPopulationOverlay(
   if (modelId === 'bigru_attn') return Boolean(populationAttention.bigru_attn?.mean?.length)
   if (modelId === 'transformer') return Boolean(populationAttention.transformer?.mean?.length)
   return false
+}
+
+/** Gradient saliency gerektiren DL modeli mi kontrol eder. */
+function isGradientModel(modelId: string): boolean {
+  return modelId === 'lstm' || modelId === 'gru' || modelId === 'transformer'
+}
+
+/**
+ * Aciklama grafigi bos oldugunda kullaniciya model bazli mesaj dondurur.
+ */
+function explainUnavailableMessage(
+  modelId: string,
+  model: WindowModelResult | null,
+): string {
+  if (modelId === 'bigru_attn') {
+    return 'BiGRU attention ağırlıkları alınamadı. DL modeli yüklenmemiş veya tahmin başarısız olmuş olabilir.'
+  }
+  if (isGradientModel(modelId) && model && model.risk_score > 0) {
+    return 'Gradient saliency bu ortamda devre dışı; risk skoru hesaplandı ancak zaman adımı açıklaması üretilemedi.'
+  }
+  if (isGradientModel(modelId)) {
+    return 'Bu model için gradient saliency açıklaması üretilemedi.'
+  }
+  return 'Bu model için açıklama üretilemedi.'
 }
 
 /** Alt bilgi notu metnini dondurur. */

@@ -184,6 +184,7 @@ export default function AciklanabilirlikPage() {
         snapshot: lastSnap,
         series,
         repeat_hours: 24,
+        patientId,
       })
       setDlSeriesResult(result)
     } catch {

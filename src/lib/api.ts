@@ -204,6 +204,42 @@ export interface PatientPreset {
   description: string;
   gender: string;
   features: Record<string, number>;
+  source?: 'synthetic' | 'demo';
+  patient_id?: string | null;
+  sepsis?: boolean | null;
+  preset_group?: 'scenario' | 'demo_real';
+}
+
+/** Snapshot tahmin ufku: 0=anlik, 6=erken uyari, 24=24s erken. */
+export type SnapshotHorizon = 0 | 6 | 24;
+
+export interface SnapshotModelMetrics {
+  model_id: string;
+  auroc: number;
+  auprc: number;
+  sens_at_spec85: number;
+  f1: number;
+  threshold: number;
+  brier?: number | null;
+  source: string;
+}
+
+export interface HorizonMetricsResponse {
+  horizon: number;
+  label: string;
+  metrics_source: string;
+  models: SnapshotModelMetrics[];
+}
+
+export interface HorizonComparisonRow {
+  model_id: string;
+  model_name: string;
+  h0_auroc: number;
+  h6_auroc: number;
+  h24_auroc: number;
+  h0_auprc: number;
+  h6_auprc: number;
+  h24_auprc: number;
 }
 
 export interface ModelDescriptor {
@@ -322,23 +358,78 @@ interface BackendSnapshotExplainResponse {
   horizon?: number;
 }
 
-/** Snapshot ML modelleri icin bilinen AUROC degerleri (Faz 4.6, h=6 test). */
-const SNAPSHOT_MODEL_AUROC: Record<string, number> = {
-  logistic_regression: 0.744,
-  random_forest: 0.798,
-  xgboost: 0.822,
-  gradient_boosting: 0.822,
-  gaussian_nb: 0.7,
+/** Ufuk bazli snapshot metrik onbellegi. */
+const snapshotMetricsCache: Partial<Record<SnapshotHorizon, Record<string, SnapshotModelMetrics>>> =
+  {};
+
+/** Faz 4/4.6 yedek metrikler (API erisilemezse). */
+const FALLBACK_SNAPSHOT_METRICS: Record<SnapshotHorizon, Record<string, Pick<SnapshotModelMetrics, 'auroc' | 'auprc' | 'threshold'>>> = {
+  6: {
+    logistic_regression: { auroc: 0.744, auprc: 0.109, threshold: 0.576 },
+    random_forest: { auroc: 0.814, auprc: 0.151, threshold: 0.463 },
+    xgboost: { auroc: 0.826, auprc: 0.18, threshold: 0.511 },
+    gradient_boosting: { auroc: 0.822, auprc: 0.164, threshold: 0.032 },
+    gaussian_nb: { auroc: 0.74, auprc: 0.072, threshold: 0.024 },
+  },
+  0: {
+    logistic_regression: { auroc: 0.743, auprc: 0.071, threshold: 0.582 },
+    random_forest: { auroc: 0.793, auprc: 0.104, threshold: 0.036 },
+    xgboost: { auroc: 0.828, auprc: 0.136, threshold: 0.534 },
+    gradient_boosting: { auroc: 0.827, auprc: 0.118, threshold: 0.022 },
+    gaussian_nb: { auroc: 0.741, auprc: 0.047, threshold: 0.011 },
+  },
+  24: {
+    logistic_regression: { auroc: 0.751, auprc: 0.206, threshold: 0.562 },
+    random_forest: { auroc: 0.802, auprc: 0.239, threshold: 0.068 },
+    xgboost: { auroc: 0.819, auprc: 0.275, threshold: 0.525 },
+    gradient_boosting: { auroc: 0.82, auprc: 0.268, threshold: 0.032 },
+    gaussian_nb: { auroc: 0.746, auprc: 0.156, threshold: 0.024 },
+  },
 };
 
-/** Snapshot ML modelleri icin bilinen AUPRC degerleri (Faz 4.6, h=6 test). */
-const SNAPSHOT_MODEL_AUPRC: Record<string, number> = {
-  logistic_regression: 0.109,
-  random_forest: 0.145,
-  xgboost: 0.177,
-  gradient_boosting: 0.164,
-  gaussian_nb: 0.093,
-};
+/**
+ * Backend'den ufuk bazli snapshot ML metriklerini yukler ve onbellege alir.
+ */
+export async function fetchSnapshotMetrics(
+  horizon: SnapshotHorizon = 6,
+): Promise<Record<string, SnapshotModelMetrics>> {
+  if (snapshotMetricsCache[horizon]) {
+    return snapshotMetricsCache[horizon]!;
+  }
+  try {
+    const resp = await apiRequest<HorizonMetricsResponse>(
+      `/artifacts/snapshot-metrics?horizon=${horizon}`,
+    );
+    const map = Object.fromEntries(resp.models.map((m) => [m.model_id, m]));
+    snapshotMetricsCache[horizon] = map;
+    return map;
+  } catch {
+    const fallback = FALLBACK_SNAPSHOT_METRICS[horizon] ?? FALLBACK_SNAPSHOT_METRICS[6];
+    const map = Object.fromEntries(
+      Object.entries(fallback).map(([id, m]) => [
+        id,
+        {
+          model_id: id,
+          auroc: m.auroc,
+          auprc: m.auprc,
+          sens_at_spec85: 0.5,
+          f1: 0.15,
+          threshold: m.threshold,
+          source: 'fallback',
+        } satisfies SnapshotModelMetrics,
+      ]),
+    );
+    snapshotMetricsCache[horizon] = map;
+    return map;
+  }
+}
+
+/**
+ * Snapshot explain endpoint yolunu ufka gore uretir.
+ */
+function snapshotExplainPath(horizon: SnapshotHorizon): string {
+  return `/predict/snapshot/explain?horizon=${horizon}`;
+}
 
 /**
  * Risk skorunu (0-1) frontend risk band etiketine esler.
@@ -386,21 +477,25 @@ function mapSnapshotPrediction(
   raw: BackendSnapshotExplainResponse,
   features: Record<string, number>,
   modelIds?: string[],
+  metricsMap?: Record<string, SnapshotModelMetrics>,
 ): SnapshotPredictionResponse {
   const allowed = modelIds ? new Set(modelIds) : null;
   const results: SnapshotModelResult[] = raw.models
     .filter((model) => !allowed || allowed.has(model.model_id))
-    .map((model) => ({
-      model_id: model.model_id,
-      label: model.model_name,
-      category: 'ML',
-      auroc: SNAPSHOT_MODEL_AUROC[model.model_id] ?? 0.75,
-      auprc: SNAPSHOT_MODEL_AUPRC[model.model_id] ?? 0.1,
-      threshold: model.threshold,
-      risk_score: model.risk_score,
-      risk_level: bandFromScore(model.risk_score),
-      alert: model.alert,
-    }));
+    .map((model) => {
+      const meta = metricsMap?.[model.model_id];
+      return {
+        model_id: model.model_id,
+        label: model.model_name,
+        category: 'ML',
+        auroc: meta?.auroc ?? 0.75,
+        auprc: meta?.auprc ?? 0.1,
+        threshold: model.threshold,
+        risk_score: model.risk_score,
+        risk_level: bandFromScore(model.risk_score),
+        alert: model.alert,
+      };
+    });
 
   const top_features_by_model: Record<string, TopFeatureContribution[]> = {};
   if (raw.shap_by_model) {
@@ -439,11 +534,11 @@ interface BackendModelDescriptor {
   median_lead_h?: number | null;
 }
 
-/** Snapshot ML modelleri icin h=6 esik degerleri. */
+/** Snapshot ML modelleri icin h=6 yedek esik degerleri. */
 const SNAPSHOT_MODEL_THRESHOLDS: Record<string, number> = {
   logistic_regression: 0.576,
-  random_forest: 0.043,
-  xgboost: 0.531,
+  random_forest: 0.463,
+  xgboost: 0.511,
   gradient_boosting: 0.032,
   gaussian_nb: 0.024,
 };
@@ -458,7 +553,7 @@ function mapModelDescriptor(raw: BackendModelDescriptor): ModelDescriptor {
     label: raw.model_name,
     category: isLive ? 'Snapshot ML' : 'DL (pencere)',
     auroc: raw.auroc,
-    auprc: raw.auprc ?? SNAPSHOT_MODEL_AUPRC[raw.model_id] ?? 0.1,
+    auprc: raw.auprc ?? 0.1,
     threshold: SNAPSHOT_MODEL_THRESHOLDS[raw.model_id] ?? 0.5,
     is_live: isLive,
     note: isLive ? null : 'Snapshot tahmini desteklemez',
@@ -501,16 +596,18 @@ export const simulatorAPI = {
     features: Record<string, number>,
     gender: string,
     modelIds?: string[],
+    horizon: SnapshotHorizon = 6,
   ): Promise<SnapshotPredictionResponse> => {
     const snapshot = featuresToSnapshot(features, gender);
+    const metricsMap = await fetchSnapshotMetrics(horizon);
     const raw = await apiRequest<BackendSnapshotExplainResponse>(
-      '/predict/snapshot/explain',
+      snapshotExplainPath(horizon),
       {
         method: 'POST',
         body: JSON.stringify({ snapshot }),
       },
     );
-    return mapSnapshotPrediction(raw, features, modelIds);
+    return mapSnapshotPrediction(raw, features, modelIds, metricsMap);
   },
 
   /**
@@ -520,9 +617,10 @@ export const simulatorAPI = {
   explainSnapshot: async (
     features: Record<string, number>,
     gender: string,
+    horizon: SnapshotHorizon = 6,
   ): Promise<SnapshotExplainResponse> => {
     const snapshot = featuresToSnapshot(features, gender);
-    return apiRequest<SnapshotExplainResponse>('/predict/snapshot/explain', {
+    return apiRequest<SnapshotExplainResponse>(snapshotExplainPath(horizon), {
       method: 'POST',
       body: JSON.stringify({ snapshot }),
     });
@@ -781,6 +879,14 @@ export const artifactsAPI = {
   getLeadTime: async (): Promise<LeadTimeSummary> =>
     apiRequest<LeadTimeSummary>('/artifacts/lead-time'),
 
+  /** Ufuk bazli snapshot ML test metrikleri (Faz 4.6/4.7). */
+  getSnapshotMetrics: async (horizon: SnapshotHorizon = 6): Promise<HorizonMetricsResponse> =>
+    apiRequest<HorizonMetricsResponse>(`/artifacts/snapshot-metrics?horizon=${horizon}`),
+
+  /** 5 ML model x h=0/6/24 AUROC/AUPRC karsilastirmasi. */
+  getHorizonComparison: async (): Promise<HorizonComparisonRow[]> =>
+    apiRequest<HorizonComparisonRow[]>('/artifacts/horizon-comparison'),
+
   /**
    * XGBoost global SHAP sıralaması (sepsis-son: GET /artifacts/feature-ranking).
    * modelName verilirse shap-summary fallback kullanilir.
@@ -892,6 +998,7 @@ export const windowDemoAPI = {
     snapshot: Record<string, number | undefined>;
     series?: Record<string, number | undefined>[];
     repeat_hours?: number;
+    patientId?: string;
   }): Promise<WindowPredictionResponse> =>
     apiRequest<WindowPredictionResponse>('/predict/window', {
       method: 'POST',
@@ -899,6 +1006,7 @@ export const windowDemoAPI = {
         snapshot: payload.snapshot,
         series: payload.series ?? null,
         repeat_hours: payload.repeat_hours ?? 24,
+        patient_id: payload.patientId ?? null,
       }),
     }),
 };

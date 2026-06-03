@@ -9,6 +9,7 @@ import { motion } from 'framer-motion'
 import {
   api,
   PatientPreset,
+  SnapshotHorizon,
   SnapshotModelResult,
   SnapshotPredictionResponse,
   TopFeatureContribution,
@@ -46,17 +47,25 @@ const RISK_LEVEL_COLOR: Record<string, string> = {
   critical: 'text-red-800 bg-red-100 dark:bg-red-900/30 border-red-500',
 }
 
+const HORIZON_OPTIONS: { value: SnapshotHorizon; label: string; hint: string }[] = [
+  { value: 0, label: 'h=0', hint: 'Anlık sepsis (SepsisLabel)' },
+  { value: 6, label: 'h=6', hint: '6 saat erken uyarı (varsayılan)' },
+  { value: 24, label: 'h=24', hint: '24 saat erken uyarı' },
+]
+
 export default function Dashboard() {
   const [states, setStates] = useState<PresetState[]>([])
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [explainModelId, setExplainModelId] = useState('xgboost')
+  const [horizon, setHorizon] = useState<SnapshotHorizon>(6)
   const [leadTime, setLeadTime] = useState<LeadTimeSummary | null>(null)
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
 
-  // İlk yüklemede tüm presetler için canlı tahmin başlat
+  // Preset listesi + secili ufuk icin canli tahmin
   useEffect(() => {
     const bootstrap = async () => {
       try {
+        setBootstrapError(null)
         const [presets, lead] = await Promise.all([
           api.simulator.getPresets(),
           api.artifacts.getLeadTime().catch(() => null),
@@ -70,11 +79,10 @@ export default function Dashboard() {
         }))
         setStates(initial)
 
-        // Her preset için paralel tahmin
         await Promise.all(
           presets.map(async (p, idx) => {
             try {
-              const r = await api.simulator.predictSnapshot(p.features, p.gender)
+              const r = await api.simulator.predictSnapshot(p.features, p.gender, undefined, horizon)
               setStates((prev) => {
                 const next = [...prev]
                 next[idx] = { preset: p, result: r, loading: false, error: null }
@@ -96,7 +104,7 @@ export default function Dashboard() {
       }
     }
     void bootstrap()
-  }, [])
+  }, [horizon])
 
   const selected = states[selectedIdx]
   const alarmCount = useMemo(
@@ -146,9 +154,9 @@ export default function Dashboard() {
               Sepsis Erken Uyarı Dashboard
             </h1>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
-              Üç örnek hasta profilinin canlı multi-model risk değerlendirmesi.
-              Test metrikleri: AUROC (sıralama) ve AUPRC (seyrek pozitiflerde ayırım).
-              Slider üzerinden değer değiştirmek için{' '}
+              Demo (Faz 4.8) + sentetik senaryolar; canlı snapshot ML tahmini.
+              Test metrikleri: AUROC / AUPRC (Faz 4.6–4.7, seçili ufuk).
+              Slider için{' '}
               <Link
                 href="/simulator"
                 className="text-blue-600 hover:underline inline-flex items-center"
@@ -157,22 +165,50 @@ export default function Dashboard() {
                 <ArrowRightIcon className="w-3 h-3 ml-1" />
               </Link>
             </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-500">Tahmin ufku:</span>
+              {HORIZON_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  title={opt.hint}
+                  onClick={() => setHorizon(opt.value)}
+                  className={clsx(
+                    'px-3 py-1 rounded-full text-xs font-medium border transition-colors',
+                    horizon === opt.value
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-indigo-400',
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
+          <div className="flex flex-col gap-2 items-end">
           {leadTime && (
-            <div className="flex items-center gap-3 px-4 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
-              <BoltIcon className="w-5 h-5 text-blue-600" />
+            <div className="flex items-center gap-3 px-4 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 max-w-sm">
+              <BoltIcon className="w-5 h-5 text-blue-600 flex-shrink-0" />
               <div className="text-xs">
                 <div className="font-semibold text-blue-900 dark:text-blue-200">
-                  Klinik özet (V5 XGBoost)
+                  Araştırma özeti (V5 temporal XGBoost)
                 </div>
                 <div className="text-blue-700 dark:text-blue-300">
                   Yakalama: {(leadTime.detection_rate * 100).toFixed(1)}% · Lead time:
                   ~{leadTime.median_lead_time_hours.toFixed(0)}h ·
                   Erken alarm: {(leadTime.early_alarm_rate * 100).toFixed(1)}%
                 </div>
+                <p className="text-[10px] text-blue-600/80 dark:text-blue-400/80 mt-1">
+                  605 özellik · frozen test · canlı demo snapshot (18 özellik, h=
+                  {horizon}) ile aynı değil
+                </p>
               </div>
             </div>
           )}
+          <div className="text-[10px] text-gray-500 text-right max-w-xs">
+            Snapshot rozetleri: Faz 4.6 Optuna (h=6 XGB/RF) + Faz 4.7 (h=0/h=24)
+          </div>
+          </div>
         </div>
 
         {/* Alarm banner */}
@@ -224,16 +260,23 @@ export default function Dashboard() {
                           : 'border-gray-200 dark:border-gray-700 hover:border-gray-300',
                       )}
                     >
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center justify-between mb-2 gap-2">
                         <h3 className="font-semibold text-sm">{s.preset.label}</h3>
-                        <span
-                          className={clsx(
-                            'text-xs px-2 py-0.5 rounded-full border',
-                            RISK_LEVEL_COLOR[band] ?? RISK_LEVEL_COLOR.low,
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {s.preset.preset_group === 'demo_real' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+                              Gerçek
+                            </span>
                           )}
-                        >
-                          {RISK_LEVEL_LABEL[band] ?? band}
-                        </span>
+                          <span
+                            className={clsx(
+                              'text-xs px-2 py-0.5 rounded-full border',
+                              RISK_LEVEL_COLOR[band] ?? RISK_LEVEL_COLOR.low,
+                            )}
+                          >
+                            {RISK_LEVEL_LABEL[band] ?? band}
+                          </span>
+                        </div>
                       </div>
                       <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2">
                         {s.preset.description}
@@ -256,13 +299,16 @@ export default function Dashboard() {
             {selected && (
               <>
                 <div className="card">
-                  <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
                     <div>
                       <h2 className="text-xl font-semibold">{selected.preset.label}</h2>
                       <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                         {selected.preset.description}
                       </p>
                     </div>
+                    <span className="text-xs px-2 py-1 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+                      Ufuk: h={horizon}
+                    </span>
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm pt-3 border-t border-gray-200 dark:border-gray-700">
                     <Metric label="Yaş" value={`${selected.preset.features.Age ?? '?'}`} />

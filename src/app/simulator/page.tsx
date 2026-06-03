@@ -30,11 +30,19 @@ import {
   api,
   ModelDescriptor,
   PatientPreset,
+  SnapshotHorizon,
   SnapshotPredictionResponse,
   SnapshotExplainResponse,
   ShapContribution,
   FeatureStats,
+  HorizonComparisonRow,
 } from '@/lib/api'
+
+const HORIZON_OPTIONS: { value: SnapshotHorizon; label: string }[] = [
+  { value: 0, label: 'h=0 Anlık' },
+  { value: 6, label: 'h=6 Erken' },
+  { value: 24, label: 'h=24 Erken' },
+]
 
 /**
  * Sepsis Simülatörü
@@ -104,6 +112,7 @@ export default function SimulatorPage() {
   const [stats, setStats] = useState<FeatureStats | null>(null)
   const [features, setFeatures] = useState<Record<string, number>>({})
   const [gender, setGender] = useState<string>('M')
+  const [horizon, setHorizon] = useState<SnapshotHorizon>(6)
 
   const [prediction, setPrediction] = useState<SnapshotPredictionResponse | null>(null)
   const [predicting, setPredicting] = useState(false)
@@ -122,7 +131,11 @@ export default function SimulatorPage() {
     setExplaining(true)
     setShapByModel(null)
     try {
-      const res: SnapshotExplainResponse = await api.simulator.explainSnapshot(features, gender)
+      const res: SnapshotExplainResponse = await api.simulator.explainSnapshot(
+        features,
+        gender,
+        horizon,
+      )
       setShapByModel(res.shap_by_model ?? (res.shap_top10 ? { xgboost: res.shap_top10 } : null))
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'SHAP hatası'
@@ -130,7 +143,7 @@ export default function SimulatorPage() {
     } finally {
       setExplaining(false)
     }
-  }, [features, gender])
+  }, [features, gender, horizon])
 
   const shapTop10 =
     shapByModel?.[explainModelId] ??
@@ -198,7 +211,7 @@ export default function SimulatorPage() {
         setPrediction(null)
         return
       }
-      const res = await api.simulator.predictSnapshot(features, gender, ids)
+      const res = await api.simulator.predictSnapshot(features, gender, ids, horizon)
       setPrediction(res)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Tahmin başarısız'
@@ -206,7 +219,7 @@ export default function SimulatorPage() {
     } finally {
       setPredicting(false)
     }
-  }, [features, gender, selectedModelIds, models])
+  }, [features, gender, selectedModelIds, models, horizon])
 
   // Debounce: features veya selectedModelIds değişince 350ms bekle.
   useEffect(() => {
@@ -217,7 +230,11 @@ export default function SimulatorPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [features, selectedModelIds, gender, runPrediction])
+  }, [features, selectedModelIds, gender, horizon, runPrediction])
+
+  useEffect(() => {
+    setShapByModel(null)
+  }, [horizon])
 
   const chartData = useMemo(() => {
     if (!prediction) return []
@@ -260,10 +277,26 @@ export default function SimulatorPage() {
               Sepsis Simülatörü
             </h1>
             <p className="text-gray-600 dark:text-gray-400 text-sm">
-              Hazır hasta profilleri üzerine slider'larla değer değiştirin —
-              canlı modeller anlık olarak risk skorunu yeniden hesaplar.
-              Model listesinde test AUROC ve AUPRC (h=6) birlikte gösterilir.
+              Demo (Faz 4.8) + sentetik senaryolar; slider ile canlı snapshot ML.
+              Metrik rozetleri seçili ufka göre (Faz 4.6–4.7).
             </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {HORIZON_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setHorizon(opt.value)}
+                  className={clsx(
+                    'px-3 py-1 rounded-full text-xs font-medium border',
+                    horizon === opt.value
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300',
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {predicting && (
@@ -318,14 +351,21 @@ export default function SimulatorPage() {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium text-sm">{p.label}</span>
-                        <span
-                          className={clsx(
-                            'text-[10px] px-2 py-0.5 rounded-full shrink-0 font-semibold tracking-wide',
-                            RISK_BAND_BADGE[p.risk_band] ?? RISK_BAND_BADGE.medium,
+                        <div className="flex items-center gap-1 shrink-0">
+                          {p.preset_group === 'demo_real' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+                              Gerçek
+                            </span>
                           )}
-                        >
-                          {RISK_BAND_LABELS[p.risk_band] ?? p.risk_band.toUpperCase()}
-                        </span>
+                          <span
+                            className={clsx(
+                              'text-[10px] px-2 py-0.5 rounded-full font-semibold tracking-wide',
+                              RISK_BAND_BADGE[p.risk_band] ?? RISK_BAND_BADGE.medium,
+                            )}
+                          >
+                            {RISK_BAND_LABELS[p.risk_band] ?? p.risk_band.toUpperCase()}
+                          </span>
+                        </div>
                       </div>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">
                         {p.description}
