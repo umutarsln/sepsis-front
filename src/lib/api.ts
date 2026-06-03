@@ -396,10 +396,18 @@ export async function fetchSnapshotMetrics(
   if (snapshotMetricsCache[horizon]) {
     return snapshotMetricsCache[horizon]!;
   }
+  const url = `${API_BASE_URL}/artifacts/snapshot-metrics?horizon=${horizon}`;
   try {
-    const resp = await apiRequest<HorizonMetricsResponse>(
-      `/artifacts/snapshot-metrics?horizon=${horizon}`,
-    );
+    const response = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(
+        (await response.json().catch(() => ({ detail: response.statusText }))).detail ??
+          response.statusText,
+      );
+    }
+    const resp = (await response.json()) as HorizonMetricsResponse;
     const map = Object.fromEntries(resp.models.map((m) => [m.model_id, m]));
     snapshotMetricsCache[horizon] = map;
     return map;
