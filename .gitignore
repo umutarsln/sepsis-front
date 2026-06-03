@@ -27,6 +27,9 @@ pnpm-debug.log*
 tmp/
 temp/
 
+# Yerel UI envanter raporu (git takip etmez)
+docs/UI_RAPORU.md
+
 # IDE and OS files
 .DS_Store
 Thumbs.db

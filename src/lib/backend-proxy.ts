@@ -19,11 +19,23 @@ const DEFAULT_MAX_RETRIES = 3;
 
 /**
  * BACKEND_API_URL ortam degiskenini normalize eder.
+ * Protokol yoksa localhost icin http://, diger hostlar icin https:// ekler.
  */
 export function resolveBackendBaseUrl(): string {
   const raw = (process.env.BACKEND_API_URL ?? DEFAULT_BACKEND).trim();
   if (!raw) return DEFAULT_BACKEND;
-  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+
+  let base = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+  if (/^https?:\/\//i.test(base)) {
+    return base;
+  }
+
+  const isLocal =
+    base.startsWith('localhost') ||
+    base.startsWith('127.0.0.1') ||
+    base.startsWith('[::1]');
+  base = `${isLocal ? 'http' : 'https'}://${base}`;
+  return base;
 }
 
 /**
