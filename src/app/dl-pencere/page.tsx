@@ -39,10 +39,32 @@ function toSnapshot(step: HourlySnapshot): Record<string, number> {
   return out
 }
 
-/** Sparkline icin secilebilir vital/lab ozellikleri. */
-type SparkFeature = 'HR' | 'MAP' | 'O2Sat' | 'Creatinine' | 'WBC'
+/** DL pencere modelinin 18 girdi ozelligi — grafik secici ve aciklama metinleri. */
+const DL_WINDOW_CHART_FEATURES: Array<{ key: keyof Omit<HourlySnapshot, 'hour'>; hint: string }> = [
+  { key: 'HR', hint: 'Nabız' },
+  { key: 'O2Sat', hint: 'SpO₂' },
+  { key: 'Temp', hint: 'Vücut ısısı' },
+  { key: 'MAP', hint: 'Ort. arter basıncı' },
+  { key: 'Resp', hint: 'Solunum hızı' },
+  { key: 'BUN', hint: 'Üre azotu' },
+  { key: 'Chloride', hint: 'Klorür' },
+  { key: 'Creatinine', hint: 'Kreatinin' },
+  { key: 'Glucose', hint: 'Glukoz' },
+  { key: 'Hct', hint: 'Hematokrit' },
+  { key: 'Hgb', hint: 'Hemoglobin' },
+  { key: 'WBC', hint: 'Lökosit' },
+  { key: 'Platelets', hint: 'Trombosit' },
+  { key: 'Age', hint: 'Yaş' },
+  { key: 'HospAdmTime', hint: 'Hastane yatış saati' },
+  { key: 'ICULOS', hint: 'YBÜ yatış süresi' },
+  { key: 'Gender_0', hint: 'Cinsiyet (K kodu)' },
+  { key: 'Gender_1', hint: 'Cinsiyet (E kodu)' },
+]
 
-const SPARK_FEATURES: SparkFeature[] = ['HR', 'MAP', 'O2Sat', 'Creatinine', 'WBC']
+/** Ozellik anahtarindan kisa Turkce aciklama dondurur. */
+function chartFeatureHint(key: string): string {
+  return DL_WINDOW_CHART_FEATURES.find((f) => f.key === key)?.hint ?? key
+}
 
 /** Faz 4.8 — 10 demo hasta uzerinde repeat vs seri AUROC ozeti. */
 const REPEAT_VS_SERIES_SUMMARY = [
@@ -74,7 +96,7 @@ export default function DlPencerePage() {
   const [seriesResult, setSeriesResult] = useState<WindowPredictionResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sparkFeature, setSparkFeature] = useState<SparkFeature>('HR')
+  const [sparkFeature, setSparkFeature] = useState<string>('HR')
   const [populationAttention, setPopulationAttention] = useState<
     Partial<Record<'bigru_attn' | 'transformer', AttentionSummary>>
   >({})
@@ -141,14 +163,23 @@ export default function DlPencerePage() {
 
   const sparkData = useMemo(() => {
     if (!windowData) return []
-    return windowData.series.map((s) => ({
-      hour: s.hour,
-      HR: s.HR,
-      MAP: s.MAP,
-      O2Sat: s.O2Sat,
-      Creatinine: s.Creatinine,
-      WBC: s.WBC,
-    }))
+    return windowData.series.map((s, idx) => {
+      const row: Record<string, number> = {
+        step: idx + 1,
+        icuHour: s.hour,
+      }
+      for (const { key } of DL_WINDOW_CHART_FEATURES) {
+        const v = s[key]
+        if (v != null) row[key] = v
+      }
+      return row
+    })
+  }, [windowData])
+
+  const windowIcuRange = useMemo(() => {
+    if (!windowData?.series.length) return null
+    const hours = windowData.series.map((s) => s.hour)
+    return { start: hours[0], end: hours[hours.length - 1] }
   }, [windowData])
 
   const compareRows = useMemo(() => {
@@ -250,28 +281,26 @@ export default function DlPencerePage() {
 
           {/* Sparkline */}
           <div className="xl:col-span-5 card">
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <div className="flex items-center">
-                <ClockIcon className="w-5 h-5 text-emerald-600 mr-2" />
-                <h3 className="font-semibold">Son 24 Saat</h3>
+            <div className="mb-3">
+              <div className="flex items-center gap-2">
+                <ClockIcon className="w-5 h-5 text-emerald-600 shrink-0" />
+                <div>
+                  <h3 className="font-semibold">24 Saatlik Pencere Trendi</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Modele giren gerçek saatlik seri — tahmin skorunu değiştirmez, yalnızca
+                    bağlam gösterir.
+                  </p>
+                </div>
               </div>
-              <div className="flex gap-1 flex-wrap">
-                {SPARK_FEATURES.map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => setSparkFeature(f)}
-                    className={clsx(
-                      'text-xs px-2 py-1 rounded border',
-                      sparkFeature === f
-                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30'
-                        : 'border-gray-300 dark:border-gray-600',
-                    )}
-                  >
-                    {f}
-                  </button>
-                ))}
-              </div>
+              {windowIcuRange && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 ml-7">
+                  X ekseni: pencere adımı 1–24 · YBÜ saati{' '}
+                  <span className="font-mono">
+                    {windowIcuRange.start}–{windowIcuRange.end}
+                  </span>{' '}
+                  (veri setindeki ICU Hour; 1–24 değil)
+                </p>
+              )}
             </div>
             {loading && !windowData ? (
               <div className="h-48 flex items-center justify-center text-gray-500 text-sm">
@@ -282,9 +311,26 @@ export default function DlPencerePage() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={sparkData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="hour" tick={{ fontSize: 11 }} label={{ value: 'Saat', position: 'insideBottom', offset: -2, fontSize: 11 }} />
+                    <XAxis
+                      dataKey="step"
+                      tick={{ fontSize: 11 }}
+                      label={{
+                        value: 'Pencere adımı (1–24)',
+                        position: 'insideBottom',
+                        offset: -2,
+                        fontSize: 11,
+                      }}
+                    />
                     <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                      formatter={(v: number) => [v.toFixed(3), chartFeatureHint(sparkFeature)]}
+                      labelFormatter={(_, payload) => {
+                        const row = payload?.[0]?.payload as { step?: number; icuHour?: number }
+                        if (!row?.step) return ''
+                        return `Adım ${row.step}/24 · YBÜ saati ${row.icuHour ?? '—'}`
+                      }}
+                    />
                     <Line
                       type="monotone"
                       dataKey={sparkFeature}
@@ -296,11 +342,36 @@ export default function DlPencerePage() {
                 </ResponsiveContainer>
               </div>
             )}
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {DL_WINDOW_CHART_FEATURES.map(({ key, hint }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setSparkFeature(key)}
+                  className={clsx(
+                    'text-left text-[11px] px-2 py-1.5 rounded border leading-tight',
+                    sparkFeature === key
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30'
+                      : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800',
+                  )}
+                >
+                  <span className="font-semibold font-mono">{key}</span>
+                  <span className="text-gray-500 dark:text-gray-400"> · {hint}</span>
+                </button>
+              ))}
+            </div>
             {windowData && (
-              <div className="mt-2 space-y-1 text-xs text-gray-500">
+              <div className="mt-3 space-y-1 text-xs text-gray-500 border-t border-gray-100 dark:border-gray-800 pt-3">
                 <p>
-                  Hasta <span className="font-mono">{windowData.patient_id}</span> · bitiş saati{' '}
-                  {windowData.end_hour}
+                  Seçili:{' '}
+                  <span className="font-mono font-semibold text-gray-700 dark:text-gray-300">
+                    {sparkFeature}
+                  </span>{' '}
+                  · {chartFeatureHint(sparkFeature)}
+                </p>
+                <p>
+                  Hasta <span className="font-mono">{windowData.patient_id}</span> · bitiş YBÜ
+                  saati {windowData.end_hour}
                 </p>
                 <p>
                   Sepsis etiketi (h=6 ufuk):{' '}

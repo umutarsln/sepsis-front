@@ -151,7 +151,7 @@ export default function SimulatorPage() {
     null
 
   const explainModelLabel =
-    models.find((m) => m.model_id === explainModelId)?.model_name ?? explainModelId
+    models.find((m) => m.model_id === explainModelId)?.label ?? explainModelId
 
   // İlk yükleme: presetler + modeller + feature_stats
   useEffect(() => {
@@ -604,7 +604,7 @@ export default function SimulatorPage() {
                     >
                       {Object.keys(shapByModel).map((modelId) => {
                         const label =
-                          models.find((m) => m.model_id === modelId)?.model_name ?? modelId
+                          models.find((m) => m.model_id === modelId)?.label ?? modelId
                         return (
                           <option key={modelId} value={modelId}>
                             {label}

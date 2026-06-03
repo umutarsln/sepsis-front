@@ -78,12 +78,6 @@ const navigation: NavItem[] = [
     icon: BeakerIcon,
     description: 'ML deneyleri ve sonuçları'
   },
-  {
-    name: 'Ayarlar',
-    href: '/ayarlar',
-    icon: Cog6ToothIcon,
-    description: 'Sistem ayarları'
-  },
 ]
 
 export default function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
