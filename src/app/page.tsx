@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import DashboardLayout from '@/components/DashboardLayout'
-import RiskChart from '@/components/RiskChart'
 import { ExclamationTriangleIcon, ArrowRightIcon, BoltIcon } from '@heroicons/react/24/outline'
 import { motion } from 'framer-motion'
 import {
@@ -236,8 +235,8 @@ export default function Dashboard() {
           {/* Sol: Hasta listesi */}
           <div className="lg:col-span-1">
             <div className="card">
-              <h2 className="text-lg font-semibold mb-4">Aktif Hasta Profilleri</h2>
-              <div className="space-y-3">
+              <h2 className="text-lg font-semibold mb-4 shrink-0">Aktif Hasta Profilleri</h2>
+              <div className="space-y-3 max-h-[min(28rem,calc(100dvh-8rem))] overflow-y-auto pr-1 overscroll-contain">
                 {states.map((s, idx) => {
                   const max = s.result
                     ? Math.max(...s.result.results.map((r) => r.risk_score))
@@ -345,23 +344,6 @@ export default function Dashboard() {
 
                 {/* Model risk skorları */}
                 <ModelResultsCard state={selected} />
-
-                {/* Risk grafiği — modeller arası karşılaştırma */}
-                {selected.result && selected.result.results.length > 0 && (
-                  <div className="card">
-                    <h3 className="text-lg font-semibold mb-4">
-                      Modeller Arası Risk Karşılaştırması
-                    </h3>
-                    <RiskChart
-                      riskScores={modelsToRiskScores(selected.result.results)}
-                    />
-                    <p className="text-xs text-gray-500 mt-2">
-                      Y-ekseni: pozitif sınıf olasılığı (%). X-ekseni: model
-                      adının ilk harfleri. Aynı snapshot tüm modellere paralel
-                      verilir; ufuk h=6 saattir.
-                    </p>
-                  </div>
-                )}
 
                 {/* Top feature katkısı */}
                 {selected.result && selected.result.top_features.length > 0 && (
@@ -530,16 +512,4 @@ function TopFeaturesCard({
       </p>
     </div>
   )
-}
-
-
-/** SnapshotModelResult listesini RiskChart'ın beklediği `Record<number, number>` formatına çevirir. */
-function modelsToRiskScores(
-  results: SnapshotModelResult[],
-): Record<number, number> {
-  const out: Record<number, number> = {}
-  results.forEach((r, i) => {
-    out[i + 1] = r.risk_score
-  })
-  return out
 }
