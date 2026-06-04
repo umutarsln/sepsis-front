@@ -163,7 +163,7 @@ export default function AnalizPage() {
             Veri Analizi
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            PhysioNet 2019 Challenge — Faz 2 EDA ve Faz 3 preprocessing ozeti
+            MIMIC-III — Faz 2 EDA ve Faz 3 preprocessing ozeti
           </p>
         </div>
 
@@ -172,7 +172,7 @@ export default function AnalizPage() {
             <InformationCircleIcon className="w-6 h-6 text-blue-600 shrink-0 mt-0.5" />
             <div className="text-sm text-gray-700 dark:text-gray-300">
               <p className="mb-2">
-                <strong>PhysioNet 2019 Challenge</strong> ICU verisi; etiketleme{' '}
+                <strong>MIMIC-III</strong> ICU verisi; etiketleme{' '}
                 <strong>Sepsis-3</strong> (SOFA artışı + enfeksiyon şüphesi) standardına uygundur.
                 Kohort dengesizdir (~%6 sepsis); model eğitimi için train/val/test split dondurulmuştur.
               </p>
